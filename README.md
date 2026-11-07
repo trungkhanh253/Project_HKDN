@@ -1,6 +1,3 @@
-<<<<<<< HEAD
-# Project_HKDN
-=======
 # Project_HKDN
 
  Ứng dụng điểm danh bằng dữ liệu khuôn mặt của IriTech **Android Client** (hỗ trợ chế độ độc lập và đồng bộ server) và **Flask Backend** sử dụng cơ sở dữ liệu **PostgreSQL** tích hợp extension **pgvector** nhận diện khuôn mặt.
