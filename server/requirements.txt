@@ -1,0 +1,13 @@
+Flask==3.0.2
+Flask-SQLAlchemy==3.1.1
+Flask-Migrate==4.0.5
+Alembic==1.13.1
+psycopg2-binary==2.9.9
+pgvector==0.2.5
+redis==5.0.1
+rq==1.15.1
+gunicorn==21.2.0
+gevent==24.2.1
+pandas==2.2.0
+Flasgger==0.9.5
+python-dotenv==1.0.1

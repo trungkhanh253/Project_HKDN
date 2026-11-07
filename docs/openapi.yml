@@ -1,0 +1,52 @@
+openapi: 3.0.0
+info:
+  title: API Hệ thống điểm danh sinh trắc học (Project_HKDN)
+  version: 1.0.0
+paths:
+  /health:
+    get:
+      summary: Kiểm tra trạng thái hoạt động của Server
+      responses:
+        '200':
+          description: Server hoạt động bình thường
+          content:
+            application/json:
+              example:
+                status: "healthy"
+
+  /auth/refresh:
+    post:
+      summary: Làm mới Token xác thực
+      responses:
+        '200':
+          description: Cấp lại access_token mới
+
+  /import/csv:
+    post:
+      summary: Đưa tệp CSV chứa danh sách sinh viên vào Redis Queue xử lý bất đồng bộ
+      requestBody:
+        required: true
+        content:
+          multipart/form-data:
+            schema:
+              type: object
+              properties:
+                file:
+                  type: string
+                  format: binary
+      responses:
+        '202':
+          description: Đã nhận file thành công và trả về job_id
+
+  /jobs/{id}:
+    get:
+      summary: Kiểm tra tiến độ xử lý tác vụ background job
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Trạng thái chi tiết của job (queued, finished, failed)
