@@ -11,12 +11,12 @@ public class SyncResult implements Serializable {
 
     public enum ErrorType {
         NONE,                // Không có lỗi
-        AUTH_ERROR,          // 401 Unauthorized: Hết hạn token/chưa đăng nhập -> KHÔNG retry (failure)
-        VALIDATION_ERROR,    // 400 Bad Request: Dữ liệu gửi lên sai quy cách -> KHÔNG retry (failure)
-        NETWORK_ERROR,       // Mất mạng, Timeout, DNS error -> CÓ THỂ retry
-        SERVER_ERROR,        // 5xx Internal Server Error -> CÓ THỂ retry
-        NO_CONFIG,           // Chưa cấu hình Server URL -> KHÔNG retry (failure)
-        SKIPPED              // Đang có tiến trình đồng bộ khác chạy dở -> Bỏ qua
+        SKIPPED_NO_CONFIG,   // Chưa nhập Server URL / Token -> SKIPPED (Worker trả success, không retry)
+        SKIPPED_CONCURRENT,  // Đang có tiến trình sync khác đang chạy -> SKIPPED (Worker trả success)
+        AUTH_ERROR,          // 401 Unauthorized: Hết hạn token -> FAILURE (Không retry, báo login lại)
+        VALIDATION_ERROR,    // 400 Bad Request: Dữ liệu gửi lên sai quy cách -> FAILURE
+        NETWORK_ERROR,       // Mất mạng, Timeout, DNS error -> RETRY
+        SERVER_ERROR         // 5xx Internal Server Error -> RETRY
     }
 
     private final SyncStatus status;
@@ -41,8 +41,12 @@ public class SyncResult implements Serializable {
         return new SyncResult(SyncStatus.ERROR, 0, 0, errorType, message);
     }
 
-    public static SyncResult skipped() {
-        return new SyncResult(SyncStatus.SKIPPED, 0, 0, ErrorType.SKIPPED, "Tiến trình đồng bộ đang chạy, bỏ qua");
+    public static SyncResult skippedNoConfig() {
+        return new SyncResult(SyncStatus.SKIPPED, 0, 0, ErrorType.SKIPPED_NO_CONFIG, "Chưa cấu hình máy chủ hoặc tài khoản");
+    }
+
+    public static SyncResult skippedConcurrent() {
+        return new SyncResult(SyncStatus.SKIPPED, 0, 0, ErrorType.SKIPPED_CONCURRENT, "Tiến trình đồng bộ đang chạy, bỏ qua");
     }
 
     public SyncStatus getStatus() {
@@ -70,13 +74,15 @@ public class SyncResult implements Serializable {
     }
 
     public boolean isSkipped() {
-        return status == SyncStatus.SKIPPED;
+        return status == SyncStatus.SKIPPED ||
+                errorType == ErrorType.SKIPPED_NO_CONFIG ||
+                errorType == ErrorType.SKIPPED_CONCURRENT;
     }
 
     /**
      * Dùng cho WorkManager:
      * Chỉ retry khi là lỗi mạng chập chờn hoặc Server lỗi 5xx.
-     * Các lỗi do cấu hình, 401, dữ liệu sai -> Dừng hẳn (failure), tránh hao pin.
+     * Các lỗi do cấu hình (SKIPPED), 401 (AUTH_ERROR), validation -> Dừng hẳn (failure), tránh hao pin.
      */
     public boolean isRetryable() {
         return errorType == ErrorType.NETWORK_ERROR || errorType == ErrorType.SERVER_ERROR;

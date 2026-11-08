@@ -110,4 +110,20 @@ public class SyncChange implements Serializable {
     public boolean isUpdate() {
         return SyncOperation.OP_UPDATE.equalsIgnoreCase(operation);
     }
+
+    public boolean isValidOperation() {
+        return isInsert() || isUpdate() || isDelete();
+    }
+
+    /**
+     * Với DELETE, payload có thể null (chỉ cần uuid và table_name để xóa).
+     * Với INSERT/UPDATE, bắt buộc payload phải có dữ liệu.
+     */
+    public boolean isValidChange() {
+        if (uuid == null || uuid.trim().isEmpty()) return false;
+        if (tableName == null || tableName.trim().isEmpty()) return false;
+        if (!isValidOperation()) return false;
+        if (!isDelete() && payload == null) return false;
+        return true;
+    }
 }
