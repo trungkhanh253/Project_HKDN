@@ -113,4 +113,9 @@ dependencies {
 
     // AndroidX WorkManager (ban 2.5.0 tuong thich voi compileSdkVersion 29)
     implementation 'androidx.work:work-runtime:2.5.0'
+
+    // Retrofit 2 & OkHttp (cho giao tiep mang va dong bo)
+    implementation 'com.squareup.retrofit2:retrofit:2.9.0'
+    implementation 'com.squareup.retrofit2:converter-gson:2.9.0'
+    implementation 'com.squareup.okhttp3:logging-interceptor:4.9.3'
 }
