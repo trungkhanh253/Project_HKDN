@@ -5,8 +5,22 @@ import java.util.List;
 
 /**
  * Interface trừu tượng cầu nối giữa Sync Engine và Cơ sở dữ liệu SQLite cục bộ
+ * Cập nhật theo thống nhất mới nhất với Android 1:
+ * - last_seq lưu trong bảng sync_meta của SQLite (đi kèm file backup/restore).
+ * - Có hàm enqueueAllForSync() khi chuyển từ Standalone sang Server mode.
+ * - applyPulledChanges() thực hiện trong transaction, tự tắt trigger và tự hủy các dòng PENDING bị ghi đè.
  */
 public interface SyncRepository {
+
+    /**
+     * Lấy con trỏ sequence mới nhất từ bảng sync_meta trong SQLite
+     */
+    long getLastSeq();
+
+    /**
+     * Cập nhật con trỏ sequence vào bảng sync_meta trong SQLite
+     */
+    void setLastSeq(long seq);
 
     /**
      * Lấy danh sách các thay đổi đang chờ trong outbox để chuẩn bị push (chỉ lấy status = PENDING)
@@ -34,10 +48,18 @@ public interface SyncRepository {
 
     /**
      * Ghi các bản ghi kéo từ Server về vào SQLite cục bộ (Idempotent Upsert)
-     * TỰ ĐỘNG bọc trong Database Transaction và TỰ ĐỘNG tắt trigger SQLite trong khối try...finally,
-     * đảm bảo cờ chặn trigger luôn được hoàn nguyên an toàn kể cả khi có Exception.
+     * - TỰ ĐỘNG bọc trong Database Transaction.
+     * - TỰ ĐỘNG tắt trigger SQLite trong khối try...finally.
+     * - Cập nhật last_seq vào bảng sync_meta trong cùng transaction.
+     * - TỰ ĐỘNG hủy các dòng PENDING trong outbox của cùng uuid (Server Wins - chống ghi đè ngược).
      */
-    void applyPulledChanges(List<SyncChange> changes);
+    void applyPulledChanges(List<SyncChange> changes, long newSeq);
+
+    /**
+     * Đưa toàn bộ dữ liệu hiện tại trong 6 bảng vào sync_outbox để chuẩn bị đồng bộ lên Server lần đầu
+     * Dùng khi chuyển từ Standalone Mode sang Server Mode.
+     */
+    void enqueueAllForSync();
 
     /**
      * Đếm số lượng thay đổi còn đang chờ push (status = PENDING)

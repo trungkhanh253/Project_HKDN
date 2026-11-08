@@ -11,6 +11,7 @@ import com.iritech.irissample.sync.model.SyncPushResponse;
 import com.iritech.irissample.sync.model.SyncResult;
 import com.iritech.irissample.sync.model.SyncStatus;
 import com.iritech.irissample.sync.util.SyncLogger;
+import com.iritech.irissample.sync.util.TableMapper;
 import java.io.IOException;
 import java.util.ArrayList;
 import java.util.List;
@@ -162,7 +163,6 @@ public class SyncManager {
             boolean hasMorePending = true;
 
             while (hasMorePending && pushBatchCount < MAX_PUSH_BATCHES) {
-                // Kiểm tra Worker có bị hệ điều hành ngắt hay không
                 if (Thread.currentThread().isInterrupted()) {
                     logger.w(TAG, "Sync thread bị ngắt (Worker stopped), dừng chu trình push.");
                     SyncResult interruptResult = SyncResult.error(SyncResult.ErrorType.INTERNAL_ERROR, "Tác vụ đồng bộ bị hủy ngang");
@@ -183,6 +183,8 @@ public class SyncManager {
                     if (c.getChangeId() != null) {
                         lastAttemptedBatchIds.add(c.getChangeId());
                     }
+                    // Tự động map tên bảng sang chuẩn Server
+                    c.setTableName(TableMapper.toServerTableName(c.getTableName()));
                 }
 
                 logger.d(TAG, "Đang push lô " + pushBatchCount + " (" + pendingChanges.size() + " bản ghi)...");
@@ -190,7 +192,6 @@ public class SyncManager {
                 SyncPushRequest pushRequest = new SyncPushRequest(prefs.getDeviceId(), pendingChanges);
                 SyncPushResponse pushResponse = api.push(pushRequest);
 
-                // Kiểm tra lỗi nếu response rỗng
                 if (pushResponse == null) {
                     throw new SyncApiException(500, "Server trả về Push response rỗng");
                 }
@@ -198,21 +199,18 @@ public class SyncManager {
                 List<String> syncedIds = pushResponse.getSyncedChangeIds();
                 List<String> failedIds = pushResponse.getFailedChangeIds();
 
-                // Kiểm tra tiến triển: nếu server không xác nhận bất kỳ dòng nào -> Dừng push tránh lặp vô hạn
                 int handled = (syncedIds == null ? 0 : syncedIds.size()) + (failedIds == null ? 0 : failedIds.size());
                 if (handled == 0) {
                     logger.w(TAG, "Lô " + pushBatchCount + ": Server không xác nhận bản ghi nào trong synced hay failed. Dừng push để bảo vệ.");
                     break;
                 }
 
-                // a. Xóa khỏi outbox các change_id server xác nhận thành công
                 if (syncedIds != null && !syncedIds.isEmpty()) {
                     repository.markSynced(syncedIds);
                     totalPushed += syncedIds.size();
                     logger.d(TAG, "Lô " + pushBatchCount + ": Push thành công " + syncedIds.size() + " bản ghi.");
                 }
 
-                // b. Đánh dấu FAILED các change_id server từ chối riêng lẻ
                 if (failedIds != null && !failedIds.isEmpty()) {
                     String errMsg = pushResponse.getErrorMessage() != null ? pushResponse.getErrorMessage() : "Server rejected item";
                     repository.markFailed(failedIds, errMsg);
@@ -220,7 +218,6 @@ public class SyncManager {
                     logger.w(TAG, "Lô " + pushBatchCount + ": Có " + failedIds.size() + " bản ghi bị từ chối: " + errMsg);
                 }
 
-                // c. Nếu số bản ghi vừa lấy < BATCH_SIZE thì outbox đã hết, dừng lặp push
                 if (pendingChanges.size() < BATCH_SIZE) {
                     hasMorePending = false;
                 }
@@ -232,9 +229,10 @@ public class SyncManager {
 
             // -------------------------------------------------------------------------
             // BƯỚC 2: PULL VỚI PHÂN TRANG (Kéo dữ liệu mới từ Server về SQLite)
+            // Lấy last_seq trực tiếp từ SQLite sync_meta (ưu tiên hơn SharedPreferences)
             // -------------------------------------------------------------------------
             boolean hasMore = true;
-            long currentSeq = prefs.getLastSeq();
+            long currentSeq = Math.max(repository.getLastSeq(), prefs.getLastSeq());
             int pullPageCount = 0;
 
             while (hasMore && pullPageCount < MAX_PULL_PAGES) {
@@ -257,24 +255,28 @@ public class SyncManager {
                 List<SyncChange> changes = pullResponse.getChanges();
                 long newSeq = pullResponse.getNewSeq();
 
-                // BẢO VỆ CHỐNG VÒNG LẶP VÔ HẠN:
-                // Nếu server báo has_more=true nhưng new_seq không tăng -> Ném lỗi ngay lập tức
                 if (pullResponse.isHasMore() && newSeq <= currentSeq) {
                     throw new IllegalStateException("Server báo has_more=true nhưng new_seq không tăng (" + newSeq + " <= " + currentSeq + ")");
                 }
 
-                // 1. Áp dụng thay đổi vào SQLite (idempotent upsert & tự tắt trigger trong transaction)
-                if (changes != null && !changes.isEmpty()) {
-                    repository.applyPulledChanges(changes);
+                // Map tên bảng sang chuẩn SQLite local
+                if (changes != null) {
+                    for (SyncChange c : changes) {
+                        c.setTableName(TableMapper.toLocalTableName(c.getTableName()));
+                    }
+                }
+
+                // 1. Áp dụng thay đổi vào SQLite và cập nhật last_seq vào bảng sync_meta trong cùng Transaction
+                // Tự động hủy các dòng PENDING cũ của cùng uuid (Server Wins)
+                repository.applyPulledChanges(changes, newSeq);
+                if (changes != null) {
                     totalPulled += changes.size();
                     logger.d(TAG, "Trang " + pullPageCount + ": Đã cập nhật " + changes.size() + " bản ghi vào SQLite local.");
                 }
 
-                // 2. Chỉ ghi nhận last_seq mới sau khi SQLite apply thành công
-                if (newSeq > currentSeq) {
-                    currentSeq = newSeq;
-                    prefs.setLastSeq(currentSeq);
-                }
+                // Cập nhật cả prefs để đồng bộ
+                currentSeq = Math.max(newSeq, currentSeq);
+                prefs.setLastSeq(currentSeq);
 
                 hasMore = pullResponse.isHasMore();
             }
@@ -297,8 +299,6 @@ public class SyncManager {
         } catch (SyncApiException e) {
             logger.e(TAG, "Lỗi SyncApiException (HTTP " + e.getHttpCode() + "): " + e.getMessage(), e);
 
-            // Xử lý Lô Độc: Nếu server từ chối cả request bằng lỗi 4xx client validation (400, 422)
-            // thì tăng retry_count cho các bản ghi trong lô để tránh kẹt vĩnh viễn hàng đợi
             if (e.isClientValidationError() && !lastAttemptedBatchIds.isEmpty()) {
                 logger.w(TAG, "Lỗi 4xx cả lô request, tăng retry_count cho " + lastAttemptedBatchIds.size() + " bản ghi trong lô.");
                 repository.recordBatchFailure(lastAttemptedBatchIds, e.getMessage());
@@ -306,11 +306,11 @@ public class SyncManager {
 
             SyncResult.ErrorType errorType;
             if (e.isAuthError()) {
-                errorType = SyncResult.ErrorType.AUTH_ERROR; // 401, 403: Không retry
+                errorType = SyncResult.ErrorType.AUTH_ERROR;
             } else if (e.isRetryableHttp()) {
-                errorType = SyncResult.ErrorType.SERVER_ERROR; // 408, 429, 5xx: Có retry
+                errorType = SyncResult.ErrorType.SERVER_ERROR;
             } else {
-                errorType = SyncResult.ErrorType.VALIDATION_ERROR; // 400, 404, 422: Không retry
+                errorType = SyncResult.ErrorType.VALIDATION_ERROR;
             }
 
             SyncResult errResult = SyncResult.error(errorType, e.getMessage());
@@ -319,7 +319,6 @@ public class SyncManager {
             return errResult;
 
         } catch (IOException e) {
-            // Lỗi mạng hoặc Timeout
             logger.e(TAG, "Lỗi mạng hoặc Timeout (IOException): " + e.getMessage(), e);
             SyncResult errResult = SyncResult.error(SyncResult.ErrorType.NETWORK_ERROR, "Mất kết nối máy chủ: " + e.getMessage());
             notifyStatus(SyncStatus.ERROR);
@@ -327,8 +326,6 @@ public class SyncManager {
             return errResult;
 
         } catch (Exception e) {
-            // Bắt các Exception logic (NPE, IllegalStateException, JsonSyntaxException, RuntimeException)
-            // Ánh xạ sang INTERNAL_ERROR (Không retry) để Worker không lặp vô ích
             logger.e(TAG, "Lỗi logic nội bộ không xác định (INTERNAL_ERROR): " + e.getMessage(), e);
             SyncResult errResult = SyncResult.error(SyncResult.ErrorType.INTERNAL_ERROR, "Lỗi xử lý nội bộ: " + e.getMessage());
             notifyStatus(SyncStatus.ERROR);
@@ -336,7 +333,7 @@ public class SyncManager {
             return errResult;
 
         } finally {
-            isSyncing.set(false); // Luôn luôn mở khóa luồng an toàn
+            isSyncing.set(false);
         }
     }
 }

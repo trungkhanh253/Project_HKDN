@@ -10,10 +10,12 @@ import java.util.Map;
 /**
  * Lớp Fake Repository lưu trữ trên RAM mô phỏng chính xác hành vi của SQLite outbox thật:
  * 1. Chỉ lấy các bản ghi có trạng thái PENDING.
- * 2. markFailed: chuyển trạng thái FAILED ngay lập tức khi server từ chối cụ thể.
+ * 2. markFailed: chuyển FAILED ngay lập tức khi server từ chối cụ thể.
  * 3. recordBatchFailure: tăng retryCount, nếu >= MAX_RETRIES (5) thì chuyển FAILED.
- * 4. applyPulledChanges: Tự động tắt/bật cờ trigger trong try...finally.
- * 5. Idempotent Upsert theo table + uuid.
+ * 4. applyPulledChanges: Tự động tắt/bật cờ trigger trong try...finally, cập nhật last_seq,
+ *    và TỰ ĐỘNG XÓA/HỦY các dòng PENDING cũ của cùng uuid (Server Wins - chống xung đột ping-pong).
+ * 5. Có bảng giả lập sync_meta lưu last_seq.
+ * 6. Có hàm enqueueAllForSync() đưa dữ liệu vào outbox.
  */
 public class FakeSyncRepository implements SyncRepository {
 
@@ -22,7 +24,8 @@ public class FakeSyncRepository implements SyncRepository {
     public enum OutboxStatus {
         PENDING,
         SYNCED,
-        FAILED
+        FAILED,
+        CANCELLED // Đã bị Server Wins ghi đè bản mới hơn
     }
 
     public static class OutboxEntry {
@@ -42,7 +45,27 @@ public class FakeSyncRepository implements SyncRepository {
 
     private final List<OutboxEntry> outboxEntries = new ArrayList<>();
     private final Map<String, SyncChange> appliedDatabase = new HashMap<>(); // Mô phỏng DB SQLite (Key = Table + UUID)
+    private final Map<String, String> syncMeta = new HashMap<>(); // Mô phỏng bảng sync_meta trong SQLite
     private boolean isTriggerSuppressed = false;
+
+    public FakeSyncRepository() {
+        syncMeta.put("last_seq", "0");
+    }
+
+    @Override
+    public synchronized long getLastSeq() {
+        String val = syncMeta.get("last_seq");
+        try {
+            return val != null ? Long.parseLong(val) : 0L;
+        } catch (NumberFormatException e) {
+            return 0L;
+        }
+    }
+
+    @Override
+    public synchronized void setLastSeq(long seq) {
+        syncMeta.put("last_seq", String.valueOf(seq));
+    }
 
     public synchronized void addPendingChange(SyncChange change) {
         if (change != null) {
@@ -106,13 +129,17 @@ public class FakeSyncRepository implements SyncRepository {
     }
 
     @Override
-    public synchronized void applyPulledChanges(List<SyncChange> changes) {
-        if (changes == null || changes.isEmpty()) return;
+    public synchronized void applyPulledChanges(List<SyncChange> changes, long newSeq) {
+        if (changes == null || changes.isEmpty()) {
+            if (newSeq > getLastSeq()) {
+                setLastSeq(newSeq);
+            }
+            return;
+        }
 
         // Bật cờ chặn trigger và đảm bảo luôn reset trong khối finally
         this.isTriggerSuppressed = true;
         try {
-            // Mô phỏng Idempotent Upsert / Delete trong SQLite (Server Wins)
             for (SyncChange c : changes) {
                 String dbKey = c.getTableName() + "_" + c.getUuid();
                 if (c.isDelete()) {
@@ -120,9 +147,32 @@ public class FakeSyncRepository implements SyncRepository {
                 } else {
                     appliedDatabase.put(dbKey, c);
                 }
+
+                // XÁC NHẬN MỤC 5: Server Wins - Hủy các dòng PENDING cũ của cùng uuid trong outbox
+                // Tránh việc lần sau lại push cái cũ đè ngược lại Server
+                for (OutboxEntry entry : outboxEntries) {
+                    if (entry.status == OutboxStatus.PENDING &&
+                            entry.change.getUuid() != null &&
+                            entry.change.getUuid().equals(c.getUuid())) {
+                        entry.status = OutboxStatus.CANCELLED;
+                    }
+                }
+            }
+
+            // Cập nhật last_seq vào sync_meta trong cùng Transaction
+            if (newSeq > getLastSeq()) {
+                setLastSeq(newSeq);
             }
         } finally {
             this.isTriggerSuppressed = false; // Luôn hoàn nguyên cờ an toàn
+        }
+    }
+
+    @Override
+    public synchronized void enqueueAllForSync() {
+        // Đưa toàn bộ các bản ghi hiện tại trong appliedDatabase vào outbox để push lần đầu
+        for (SyncChange c : appliedDatabase.values()) {
+            addPendingChange(c);
         }
     }
 
