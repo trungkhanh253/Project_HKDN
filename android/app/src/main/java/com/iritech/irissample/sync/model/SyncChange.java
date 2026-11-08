@@ -1,12 +1,15 @@
 package com.iritech.irissample.sync.model;
 
+import com.google.gson.JsonObject;
 import com.google.gson.annotations.SerializedName;
 import java.io.Serializable;
-import java.util.Map;
 
 /**
  * Đại diện cho một thay đổi dữ liệu (Change Data Capture)
  * Tương ứng với một dòng trong bảng sync_outbox (local) hoặc bảng seq (server)
+ *
+ * Lưu ý: payload sử dụng JsonObject của Gson để tránh lỗi tự ép kiểu số nguyên thành Double (5 -> 5.0)
+ * seq dùng kiểu Wrapper Long (nullable) vì khi Push từ local lên seq sẽ là null.
  */
 public class SyncChange implements Serializable {
 
@@ -20,23 +23,28 @@ public class SyncChange implements Serializable {
     private String operation; // "INSERT", "UPDATE", "DELETE"
 
     @SerializedName("payload")
-    private Map<String, Object> payload; // Dữ liệu các cột của bản ghi
+    private JsonObject payload; // Dùng JsonObject để an toàn kiểu dữ liệu (tránh bug 5.0 của Map)
 
     @SerializedName("updated_at")
     private long updatedAt; // Epoch timestamp (milliseconds)
 
     @SerializedName("seq")
-    private long seq; // Chỉ dùng khi Pull từ Server về (con trỏ sequence)
+    private Long seq; // Nullable: Client Push lên thì null, Server trả về thì có giá trị
 
     public SyncChange() {
     }
 
-    public SyncChange(String uuid, String tableName, String operation, Map<String, Object> payload, long updatedAt) {
+    public SyncChange(String uuid, String tableName, String operation, JsonObject payload, long updatedAt) {
         this.uuid = uuid;
         this.tableName = tableName;
         this.operation = operation;
         this.payload = payload;
         this.updatedAt = updatedAt;
+        this.seq = null; // Khi tạo ở client, seq mặc định là null
+    }
+
+    public SyncChange(String uuid, String tableName, SyncOperation operation, JsonObject payload, long updatedAt) {
+        this(uuid, tableName, operation != null ? operation.name() : null, payload, updatedAt);
     }
 
     public String getUuid() {
@@ -60,14 +68,18 @@ public class SyncChange implements Serializable {
     }
 
     public void setOperation(String operation) {
-        this.operation = operation;
+        this.operation = operation != null ? operation.toUpperCase().trim() : null;
     }
 
-    public Map<String, Object> getPayload() {
+    public void setOperation(SyncOperation op) {
+        this.operation = op != null ? op.name() : null;
+    }
+
+    public JsonObject getPayload() {
         return payload;
     }
 
-    public void setPayload(Map<String, Object> payload) {
+    public void setPayload(JsonObject payload) {
         this.payload = payload;
     }
 
@@ -79,23 +91,23 @@ public class SyncChange implements Serializable {
         this.updatedAt = updatedAt;
     }
 
-    public long getSeq() {
+    public Long getSeq() {
         return seq;
     }
 
-    public void setSeq(long seq) {
+    public void setSeq(Long seq) {
         this.seq = seq;
     }
 
     public boolean isDelete() {
-        return "DELETE".equalsIgnoreCase(operation);
+        return SyncOperation.OP_DELETE.equalsIgnoreCase(operation);
     }
 
     public boolean isInsert() {
-        return "INSERT".equalsIgnoreCase(operation);
+        return SyncOperation.OP_INSERT.equalsIgnoreCase(operation);
     }
 
     public boolean isUpdate() {
-        return "UPDATE".equalsIgnoreCase(operation);
+        return SyncOperation.OP_UPDATE.equalsIgnoreCase(operation);
     }
 }
