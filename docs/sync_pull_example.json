@@ -1,0 +1,54 @@
+{
+  "description": "HỢP ĐỒNG API: GET /api/v1/sync/pull?since_seq={last_seq}&limit=100 (Kéo thay đổi từ Server về SQLite)",
+  "request_query_params": {
+    "since_seq": 105,
+    "limit": 100
+  },
+  "response_example": {
+    "new_seq": 112,
+    "has_more": false,
+    "changes": [
+      {
+        "uuid": "a1b2c3d4-e5f6-7890-abcd-ef1234567890",
+        "table_name": "subjects",
+        "operation": "INSERT",
+        "payload": {
+          "subject_id": "IT4010",
+          "subject_name": "Lập trình Di động Nâng cao",
+          "time_slot": "Thứ 2 (Ca 2)",
+          "created_by": "admin01",
+          "instructor_id": "admin01",
+          "subject_status": "ASSIGNED",
+          "semester_start_date": "01/09/2026",
+          "semester_end_date": "01/12/2026"
+        },
+        "updated_at": 1731054100000,
+        "seq": 106
+      },
+      {
+        "uuid": "8f3b6c2a-1123-4d56-9a78-123456789abc",
+        "table_name": "checkin_history",
+        "operation": "INSERT",
+        "payload": {
+          "checkin_id": 501,
+          "student_id": "SV2024001",
+          "subject_id": "IT4010",
+          "checkin_time": "08:15:30",
+          "checkin_date": "2026-11-08"
+        },
+        "updated_at": 1731054110000,
+        "seq": 107
+      },
+      {
+        "uuid": "c3d4e5f6-7788-9900-1122-334455667788",
+        "table_name": "students",
+        "operation": "DELETE",
+        "payload": {
+          "student_id": "SV2024099"
+        },
+        "updated_at": 1731054120000,
+        "seq": 108
+      }
+    ]
+  }
+}
