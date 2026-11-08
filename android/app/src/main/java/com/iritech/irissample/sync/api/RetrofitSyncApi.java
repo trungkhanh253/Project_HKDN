@@ -1,5 +1,6 @@
 package com.iritech.irissample.sync.api;
 
+import com.google.gson.JsonSyntaxException;
 import com.iritech.irissample.sync.model.SyncPullResponse;
 import com.iritech.irissample.sync.model.SyncPushRequest;
 import com.iritech.irissample.sync.model.SyncPushResponse;
@@ -7,7 +8,7 @@ import retrofit2.Response;
 
 /**
  * Triển khai SyncApi thực tế sử dụng Retrofit (dành cho môi trường chạy thật)
- * Ném SyncApiException thống nhất khi gặp lỗi HTTP.
+ * Bọc các lỗi JsonSyntaxException và mã HTTP thành SyncApiException thống nhất.
  */
 public class RetrofitSyncApi implements SyncApi {
 
@@ -19,27 +20,37 @@ public class RetrofitSyncApi implements SyncApi {
 
     @Override
     public SyncPushResponse push(SyncPushRequest request) throws Exception {
-        Response<SyncPushResponse> response = service.pushChanges(request).execute();
+        try {
+            Response<SyncPushResponse> response = service.pushChanges(request).execute();
 
-        if (response.isSuccessful() && response.body() != null) {
-            return response.body();
+            if (response.isSuccessful() && response.body() != null) {
+                return response.body();
+            }
+
+            int code = response.code();
+            String errorBody = response.errorBody() != null ? response.errorBody().string() : "Empty error body";
+            throw new SyncApiException(code, "Push HTTP " + code + ": " + errorBody);
+
+        } catch (JsonSyntaxException e) {
+            throw new SyncApiException(500, "Push failed: Malformed JSON syntax from server: " + e.getMessage());
         }
-
-        int code = response.code();
-        String errorBody = response.errorBody() != null ? response.errorBody().string() : "Empty error response";
-        throw new SyncApiException(code, "Push HTTP " + code + ": " + errorBody);
     }
 
     @Override
     public SyncPullResponse pull(long sinceSeq, int limit) throws Exception {
-        Response<SyncPullResponse> response = service.pullChanges(sinceSeq, limit).execute();
+        try {
+            Response<SyncPullResponse> response = service.pullChanges(sinceSeq, limit).execute();
 
-        if (response.isSuccessful() && response.body() != null) {
-            return response.body();
+            if (response.isSuccessful() && response.body() != null) {
+                return response.body();
+            }
+
+            int code = response.code();
+            String errorBody = response.errorBody() != null ? response.errorBody().string() : "Empty error body";
+            throw new SyncApiException(code, "Pull HTTP " + code + ": " + errorBody);
+
+        } catch (JsonSyntaxException e) {
+            throw new SyncApiException(500, "Pull failed: Malformed JSON syntax from server: " + e.getMessage());
         }
-
-        int code = response.code();
-        String errorBody = response.errorBody() != null ? response.errorBody().string() : "Empty error response";
-        throw new SyncApiException(code, "Pull HTTP " + code + ": " + errorBody);
     }
 }

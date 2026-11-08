@@ -24,7 +24,18 @@ public class SyncApiException extends Exception {
         return httpCode >= 500 && httpCode < 600;
     }
 
-    public boolean isClientError() {
-        return httpCode >= 400 && httpCode < 500;
+    /**
+     * Các mã 4xx có thể thử lại:
+     * 408 Request Timeout, 429 Too Many Requests (Rate limit)
+     */
+    public boolean isRetryableHttp() {
+        return httpCode == 408 || httpCode == 429 || isServerError();
+    }
+
+    /**
+     * Các lỗi 4xx client vĩnh viễn (400 Bad Request, 404 Not Found, 422 Unprocessable)
+     */
+    public boolean isClientValidationError() {
+        return httpCode >= 400 && httpCode < 500 && !isAuthError() && httpCode != 408 && httpCode != 429;
     }
 }

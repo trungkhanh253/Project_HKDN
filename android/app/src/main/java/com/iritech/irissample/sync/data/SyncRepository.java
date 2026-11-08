@@ -21,24 +21,24 @@ public interface SyncRepository {
     void markSynced(List<String> changeIds);
 
     /**
-     * Đánh dấu các bản ghi bị Server từ chối / lỗi validation (chuyển status = FAILED và tăng retry_count)
-     * Giúp không bị kẹt hàng đợi vô tận trong getPendingChanges.
+     * Đánh dấu các bản ghi bị lỗi (tăng retry_count, chuyển sang FAILED nếu vượt ngưỡng hoặc lỗi validation)
      */
     void markFailed(List<String> changeIds, String errorMessage);
 
     /**
      * Ghi các bản ghi kéo từ Server về vào SQLite cục bộ (Idempotent Upsert)
-     * Phải chạy trong một Database Transaction và bật cờ chặn trigger (setTriggerSuppressed(true)).
+     * TỰ ĐỘNG bọc trong Database Transaction và TỰ ĐỘNG tắt trigger SQLite trong khối try...finally,
+     * đảm bảo cờ chặn trigger luôn được hoàn nguyên an toàn kể cả khi có Exception.
      */
     void applyPulledChanges(List<SyncChange> changes);
-
-    /**
-     * Tạm dừng hoặc kích hoạt lại trigger SQLite (chống vòng lặp sync vô hạn)
-     */
-    void setTriggerSuppressed(boolean suppressed);
 
     /**
      * Đếm số lượng thay đổi còn đang chờ push (status = PENDING)
      */
     int getPendingCount();
+
+    /**
+     * Đếm số lượng thay đổi bị lỗi (status = FAILED) để cảnh báo lên giao diện
+     */
+    int getFailedCount();
 }

@@ -10,11 +10,13 @@ import java.util.Map;
 /**
  * Lớp Fake Repository lưu trữ trên RAM mô phỏng chính xác hành vi của SQLite outbox thật:
  * 1. Chỉ lấy các bản ghi có trạng thái PENDING.
- * 2. markFailed chuyển trạng thái FAILED (không bị kẹt hàng đợi).
- * 3. applyPulledChanges đảm bảo tính Idempotent (ghi đè theo uuid).
- * 4. Quản lý cờ chặn trigger (isTriggerSuppressed).
+ * 2. markFailed: tăng retryCount, nếu >= MAX_RETRIES (5) hoặc lỗi validation thì chuyển FAILED.
+ * 3. applyPulledChanges: Tự động tắt/bật cờ trigger trong try...finally.
+ * 4. Idempotent Upsert theo table + uuid.
  */
 public class FakeSyncRepository implements SyncRepository {
+
+    public static final int MAX_RETRIES = 5;
 
     public enum OutboxStatus {
         PENDING,
@@ -82,9 +84,12 @@ public class FakeSyncRepository implements SyncRepository {
         if (changeIds == null || changeIds.isEmpty()) return;
         for (OutboxEntry entry : outboxEntries) {
             if (changeIds.contains(entry.changeId)) {
-                entry.status = OutboxStatus.FAILED;
                 entry.retryCount++;
                 entry.lastError = errorMessage;
+                // Nếu vượt quá số lần thử hoặc bị từ chối hẳn -> Chuyển sang FAILED vĩnh viễn
+                if (entry.retryCount >= MAX_RETRIES || (errorMessage != null && errorMessage.contains("rejected"))) {
+                    entry.status = OutboxStatus.FAILED;
+                }
             }
         }
     }
@@ -92,20 +97,22 @@ public class FakeSyncRepository implements SyncRepository {
     @Override
     public synchronized void applyPulledChanges(List<SyncChange> changes) {
         if (changes == null || changes.isEmpty()) return;
-        // Mô phỏng Idempotent Upsert / Delete trong SQLite
-        for (SyncChange c : changes) {
-            String dbKey = c.getTableName() + "_" + c.getUuid();
-            if (c.isDelete()) {
-                appliedDatabase.remove(dbKey);
-            } else {
-                appliedDatabase.put(dbKey, c);
-            }
-        }
-    }
 
-    @Override
-    public synchronized void setTriggerSuppressed(boolean suppressed) {
-        this.isTriggerSuppressed = suppressed;
+        // Bật cờ chặn trigger và đảm bảo luôn reset trong khối finally
+        this.isTriggerSuppressed = true;
+        try {
+            // Mô phỏng Idempotent Upsert / Delete trong SQLite
+            for (SyncChange c : changes) {
+                String dbKey = c.getTableName() + "_" + c.getUuid();
+                if (c.isDelete()) {
+                    appliedDatabase.remove(dbKey);
+                } else {
+                    appliedDatabase.put(dbKey, c);
+                }
+            }
+        } finally {
+            this.isTriggerSuppressed = false; // Luôn hoàn nguyên cờ an toàn
+        }
     }
 
     public boolean isTriggerSuppressed() {
@@ -117,6 +124,15 @@ public class FakeSyncRepository implements SyncRepository {
         int count = 0;
         for (OutboxEntry e : outboxEntries) {
             if (e.status == OutboxStatus.PENDING) count++;
+        }
+        return count;
+    }
+
+    @Override
+    public synchronized int getFailedCount() {
+        int count = 0;
+        for (OutboxEntry e : outboxEntries) {
+            if (e.status == OutboxStatus.FAILED) count++;
         }
         return count;
     }
