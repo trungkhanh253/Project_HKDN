@@ -65,6 +65,10 @@ android {
         targetCompatibility JavaVersion.VERSION_1_8
     }
 
+    testOptions {
+        unitTests.returnDefaultValues = true
+    }
+
     packagingOptions {
         doNotStrip "**/libmqel_irisreg704.so"
         doNotStrip "**/libmqel_irisreg704s.so"

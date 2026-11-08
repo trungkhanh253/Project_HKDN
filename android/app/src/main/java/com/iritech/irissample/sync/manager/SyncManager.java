@@ -41,6 +41,7 @@ public class SyncManager {
     private final SyncLogger logger;
 
     private final AtomicBoolean isSyncing = new AtomicBoolean(false);
+    private final AtomicBoolean isAborted = new AtomicBoolean(false);
     private final List<SyncListener> listeners = new CopyOnWriteArrayList<>();
 
     private volatile SyncStatus currentStatus = SyncStatus.IDLE;
@@ -62,6 +63,31 @@ public class SyncManager {
             throw new IllegalStateException("SyncManager chưa được khởi tạo. Hãy gọi SyncManager.initialize(...) trước.");
         }
         return instance;
+    }
+
+    public static synchronized SyncManager getInstanceOrNull() {
+        return instance;
+    }
+
+    public static synchronized void resetInstanceForTesting() {
+        instance = null;
+    }
+
+    public void abortCurrentSync() {
+        this.isAborted.set(true);
+        logger.w(TAG, "Lệnh hủy đồng bộ khẩn cấp (abortCurrentSync) đã được kích hoạt.");
+    }
+
+    public boolean isSyncingNow() {
+        return isSyncing.get();
+    }
+
+    public boolean isSyncing() {
+        return isSyncing.get();
+    }
+
+    public boolean isAborted() {
+        return isAborted.get();
     }
 
     public void addListener(SyncListener listener) {
@@ -86,7 +112,7 @@ public class SyncManager {
             try {
                 l.onStatusChanged(status);
             } catch (Exception e) {
-                logger.e(TAG, "Lỗi khi thông báo trạng thái", e);
+                logger.e(TAG, "Lỗi khi thông báo trạng thái: " + e.getMessage(), e);
             }
         }
     }
@@ -97,7 +123,7 @@ public class SyncManager {
             try {
                 l.onSyncFinished(result);
             } catch (Exception e) {
-                logger.e(TAG, "Lỗi khi thông báo kết quả", e);
+                logger.e(TAG, "Lỗi khi thông báo kết quả: " + e.getMessage(), e);
             }
         }
     }
@@ -110,15 +136,11 @@ public class SyncManager {
         return lastResult;
     }
 
-    public boolean isSyncingNow() {
-        return isSyncing.get();
-    }
-
     /**
      * THỰC HIỆN CHU TRÌNH ĐỒNG BỘ 2 CHIỀU (BLOCKING METHOD)
      */
     public SyncResult sync() {
-        // 1. Chống chạy trùng lặp luồng
+        // 1. Chống chạy trùng lặp luồng (Concurrency Guard)
         if (!isSyncing.compareAndSet(false, true)) {
             logger.w(TAG, "Tiến trình đồng bộ đang chạy, bỏ qua lượt gọi trùng.");
             SyncResult skipped = SyncResult.skippedConcurrent();
@@ -130,25 +152,34 @@ public class SyncManager {
         List<String> lastAttemptedBatchIds = new ArrayList<>();
 
         try {
+            // Kiểm tra nếu có lệnh hủy đã được gọi ngay trước khi chu trình kịp bắt đầu
+            if (isAborted.get()) {
+                logger.w(TAG, "Lệnh hủy đã được kích hoạt trước khi chu trình kịp bắt đầu. Dừng ngay.");
+                SyncResult abortResult = SyncResult.skippedAborted();
+                notifyStatus(SyncStatus.SKIPPED);
+                notifyFinished(abortResult);
+                return abortResult;
+            }
+
             // 2. Kiểm tra điều kiện cấu hình
             if (!prefs.isServerMode()) {
-                logger.d(TAG, "Đang ở chế độ Standalone Mode, bỏ qua đồng bộ.");
-                SyncResult skipped = SyncResult.skippedStandalone();
+                logger.d(TAG, "Đang ở Standalone Mode. Bỏ qua sync.");
+                SyncResult result = SyncResult.skippedStandalone();
                 notifyStatus(SyncStatus.SKIPPED);
-                notifyFinished(skipped);
-                return skipped;
+                notifyFinished(result);
+                return result;
             }
 
-            String serverUrl = prefs.getServerUrl();
-            String token = prefs.getAuthToken();
-            if (serverUrl == null || serverUrl.trim().isEmpty() || token == null || token.trim().isEmpty()) {
-                logger.w(TAG, "Chưa cấu hình URL máy chủ hoặc chưa đăng nhập (thiếu token).");
-                SyncResult skipped = SyncResult.skippedNoConfig();
+            if (prefs.getServerUrl() == null || prefs.getServerUrl().trim().isEmpty() ||
+                prefs.getAuthToken() == null || prefs.getAuthToken().trim().isEmpty()) {
+                logger.w(TAG, "Chưa cấu hình Server URL hoặc Token.");
+                SyncResult result = SyncResult.skippedNoConfig();
                 notifyStatus(SyncStatus.SKIPPED);
-                notifyFinished(skipped);
-                return skipped;
+                notifyFinished(result);
+                return result;
             }
 
+            currentStatus = SyncStatus.SYNCING;
             notifyStatus(SyncStatus.SYNCING);
             logger.d(TAG, "Bắt đầu chu trình đồng bộ: PUSH -> PULL...");
 
@@ -163,12 +194,13 @@ public class SyncManager {
             boolean hasMorePending = true;
 
             while (hasMorePending && pushBatchCount < MAX_PUSH_BATCHES) {
-                if (Thread.currentThread().isInterrupted()) {
-                    logger.w(TAG, "Sync thread bị ngắt (Worker stopped), dừng chu trình push.");
-                    SyncResult interruptResult = SyncResult.error(SyncResult.ErrorType.INTERNAL_ERROR, "Tác vụ đồng bộ bị hủy ngang");
-                    notifyStatus(SyncStatus.ERROR);
-                    notifyFinished(interruptResult);
-                    return interruptResult;
+                // Kiểm tra lệnh hủy hoặc ngắt luồng từ Worker
+                if (isAborted.get() || Thread.currentThread().isInterrupted()) {
+                    logger.w(TAG, "Chu trình push bị hủy ngang (Worker stopped/aborted).");
+                    SyncResult abortResult = SyncResult.skippedAborted();
+                    notifyStatus(SyncStatus.SKIPPED);
+                    notifyFinished(abortResult);
+                    return abortResult;
                 }
 
                 List<SyncChange> pendingChanges = repository.getPendingChanges(BATCH_SIZE);
@@ -183,7 +215,6 @@ public class SyncManager {
                     if (c.getChangeId() != null) {
                         lastAttemptedBatchIds.add(c.getChangeId());
                     }
-                    // Tự động map tên bảng sang chuẩn Server
                     c.setTableName(TableMapper.toServerTableName(c.getTableName()));
                 }
 
@@ -229,19 +260,18 @@ public class SyncManager {
 
             // -------------------------------------------------------------------------
             // BƯỚC 2: PULL VỚI PHÂN TRANG (Kéo dữ liệu mới từ Server về SQLite)
-            // Lấy last_seq trực tiếp từ SQLite sync_meta (ưu tiên hơn SharedPreferences)
             // -------------------------------------------------------------------------
             boolean hasMore = true;
             long currentSeq = Math.max(repository.getLastSeq(), prefs.getLastSeq());
             int pullPageCount = 0;
 
             while (hasMore && pullPageCount < MAX_PULL_PAGES) {
-                if (Thread.currentThread().isInterrupted()) {
-                    logger.w(TAG, "Sync thread bị ngắt (Worker stopped), dừng chu trình pull.");
-                    SyncResult interruptResult = SyncResult.error(SyncResult.ErrorType.INTERNAL_ERROR, "Tác vụ đồng bộ bị hủy ngang");
-                    notifyStatus(SyncStatus.ERROR);
-                    notifyFinished(interruptResult);
-                    return interruptResult;
+                if (isAborted.get() || Thread.currentThread().isInterrupted()) {
+                    logger.w(TAG, "Chu trình pull bị hủy ngang (Worker stopped/aborted).");
+                    SyncResult abortResult = SyncResult.skippedAborted();
+                    notifyStatus(SyncStatus.SKIPPED);
+                    notifyFinished(abortResult);
+                    return abortResult;
                 }
 
                 pullPageCount++;
@@ -259,29 +289,25 @@ public class SyncManager {
                     throw new IllegalStateException("Server báo has_more=true nhưng new_seq không tăng (" + newSeq + " <= " + currentSeq + ")");
                 }
 
-                // Map tên bảng sang chuẩn SQLite local
                 if (changes != null) {
                     for (SyncChange c : changes) {
                         c.setTableName(TableMapper.toLocalTableName(c.getTableName()));
                     }
                 }
 
-                // 1. Áp dụng thay đổi vào SQLite và cập nhật last_seq vào bảng sync_meta trong cùng Transaction
-                // Tự động hủy các dòng PENDING cũ của cùng uuid (Server Wins)
                 repository.applyPulledChanges(changes, newSeq);
                 if (changes != null) {
                     totalPulled += changes.size();
                     logger.d(TAG, "Trang " + pullPageCount + ": Đã cập nhật " + changes.size() + " bản ghi vào SQLite local.");
                 }
 
-                // Cập nhật cả prefs để đồng bộ
                 currentSeq = Math.max(newSeq, currentSeq);
                 prefs.setLastSeq(currentSeq);
 
                 hasMore = pullResponse.isHasMore();
             }
 
-            if (pullPageCount >= MAX_PULL_PAGES) {
+            if (pullPageCount >= MAX_PULL_PAGES && hasMore) {
                 logger.w(TAG, "Đã chạm giới hạn tối đa " + MAX_PULL_PAGES + " trang pull trong một lần sync.");
             }
 
@@ -299,9 +325,9 @@ public class SyncManager {
         } catch (SyncApiException e) {
             logger.e(TAG, "Lỗi SyncApiException (HTTP " + e.getHttpCode() + "): " + e.getMessage(), e);
 
-            if (e.isClientValidationError() && !lastAttemptedBatchIds.isEmpty()) {
+            if (!lastAttemptedBatchIds.isEmpty() && (e.isClientValidationError() || e.getHttpCode() == 422)) {
                 logger.w(TAG, "Lỗi 4xx cả lô request, tăng retry_count cho " + lastAttemptedBatchIds.size() + " bản ghi trong lô.");
-                repository.recordBatchFailure(lastAttemptedBatchIds, e.getMessage());
+                repository.recordBatchFailure(lastAttemptedBatchIds, "HTTP " + e.getHttpCode() + ": " + e.getMessage());
             }
 
             SyncResult.ErrorType errorType;
@@ -333,6 +359,8 @@ public class SyncManager {
             return errResult;
 
         } finally {
+            // Đảm bảo luôn reset cờ hủy và giải phóng lock đồng bộ
+            isAborted.set(false);
             isSyncing.set(false);
         }
     }

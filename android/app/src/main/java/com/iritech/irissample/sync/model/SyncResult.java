@@ -14,6 +14,7 @@ public class SyncResult implements Serializable {
         SKIPPED_STANDALONE,  // Đang ở Standalone Mode (Worker trả success, không retry)
         SKIPPED_NO_CONFIG,   // Chưa nhập Server URL / Token (Worker trả success, không retry)
         SKIPPED_CONCURRENT,  // Đang có tiến trình sync khác đang chạy (Worker trả success)
+        SKIPPED_ABORTED,     // Tác vụ đồng bộ bị hủy ngang giữa chừng (Worker trả success, không ghi nhận lỗi giả)
         AUTH_ERROR,          // 401/403 Unauthorized: Hết hạn token -> FAILURE (Không retry, báo login lại)
         VALIDATION_ERROR,    // 400/404/422 Bad Request: Dữ liệu gửi lên sai quy cách -> FAILURE
         NETWORK_ERROR,       // Mất mạng, Timeout, DNS error -> RETRY
@@ -59,6 +60,10 @@ public class SyncResult implements Serializable {
         return new SyncResult(SyncStatus.SKIPPED, 0, 0, 0, ErrorType.SKIPPED_CONCURRENT, "Tiến trình đồng bộ đang chạy, bỏ qua");
     }
 
+    public static SyncResult skippedAborted() {
+        return new SyncResult(SyncStatus.SKIPPED, 0, 0, 0, ErrorType.SKIPPED_ABORTED, "Tác vụ đồng bộ đã bị hủy ngang (Aborted)");
+    }
+
     public SyncStatus getStatus() {
         return status;
     }
@@ -91,7 +96,12 @@ public class SyncResult implements Serializable {
         return status == SyncStatus.SKIPPED ||
                 errorType == ErrorType.SKIPPED_STANDALONE ||
                 errorType == ErrorType.SKIPPED_NO_CONFIG ||
-                errorType == ErrorType.SKIPPED_CONCURRENT;
+                errorType == ErrorType.SKIPPED_CONCURRENT ||
+                errorType == ErrorType.SKIPPED_ABORTED;
+    }
+
+    public boolean isAborted() {
+        return errorType == ErrorType.SKIPPED_ABORTED;
     }
 
     /**

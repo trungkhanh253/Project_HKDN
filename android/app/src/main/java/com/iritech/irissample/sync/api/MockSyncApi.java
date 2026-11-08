@@ -132,7 +132,7 @@ public class MockSyncApi implements SyncApi {
         }
 
         if (scenario == Scenario.PULL_PAGINATION) {
-            // Lần 1: trả has_more = true
+            // Lần 1: trả has_more = true, new_seq = sinceSeq + 1
             if (pullCallCount == 1) {
                 List<SyncChange> page1 = new ArrayList<>();
                 JsonObject p1 = new JsonObject();
@@ -142,14 +142,14 @@ public class MockSyncApi implements SyncApi {
                 page1.add(c1);
                 return new SyncPullResponse(sinceSeq + 1, true, page1);
             } else {
-                // Lần 2: trả has_more = false
+                // Lần 2: trả has_more = false, new_seq = sinceSeq + 1
                 List<SyncChange> page2 = new ArrayList<>();
                 JsonObject p2 = new JsonObject();
                 p2.addProperty("student_id", "SV_PAGE2");
                 SyncChange c2 = new SyncChange("cid_pull_2", "uuid_p2", "students", "INSERT", p2, System.currentTimeMillis());
-                c2.setSeq(sinceSeq + 2);
+                c2.setSeq(sinceSeq + 1);
                 page2.add(c2);
-                return new SyncPullResponse(sinceSeq + 2, false, page2);
+                return new SyncPullResponse(sinceSeq + 1, false, page2);
             }
         }
 
