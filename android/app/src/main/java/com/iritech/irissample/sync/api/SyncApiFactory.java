@@ -16,17 +16,26 @@ import retrofit2.converter.gson.GsonConverterFactory;
  */
 public class SyncApiFactory {
 
+    public static String normalizeBaseUrl(String rawUrl) {
+        if (rawUrl == null || rawUrl.trim().isEmpty()) {
+            return "http://127.0.0.1:5000/";
+        }
+        String url = rawUrl.trim();
+        if (!url.startsWith("http://") && !url.startsWith("https://")) {
+            url = "http://" + url;
+        }
+        if (!url.endsWith("/")) {
+            url += "/";
+        }
+        return url;
+    }
+
     public static SyncApiService createService(final ISyncPrefs prefs) {
-        String baseUrl = prefs.getServerUrl();
-        if (baseUrl == null || baseUrl.trim().isEmpty()) {
-            baseUrl = "http://127.0.0.1:5000/";
-        }
-        if (!baseUrl.endsWith("/")) {
-            baseUrl += "/";
-        }
+        String baseUrl = normalizeBaseUrl(prefs.getServerUrl());
 
         HttpLoggingInterceptor logging = new HttpLoggingInterceptor();
         logging.setLevel(HttpLoggingInterceptor.Level.BODY);
+        logging.redactHeader("Authorization"); // Bảo mật: Không in Bearer Token ra Logcat
 
         OkHttpClient client = new OkHttpClient.Builder()
                 .connectTimeout(15, TimeUnit.SECONDS)

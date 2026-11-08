@@ -11,31 +11,20 @@ import java.util.List;
 
 /**
  * Lớp Mock API giả lập Server phục vụ Unit Test và phát triển độc lập
- * Cho phép thiết lập kịch bản (Scenario) để kiểm thử toàn diện các case lỗi.
+ * Ném cùng loại Exception với RetrofitSyncApi (SyncApiException cho HTTP và IOException cho Mạng)
  */
 public class MockSyncApi implements SyncApi {
 
     public enum Scenario {
-        SUCCESS,                 // Push & Pull đều thành công mỹ mãn
+        SUCCESS,                 // Push & Pull đều thành công
         NETWORK_ERROR,           // Lỗi mất mạng / Timeout (ném IOException)
-        HTTP_401_UNAUTHORIZED,   // Hết hạn token / Sai thông tin đăng nhập
-        HTTP_500_SERVER_ERROR,   // Server nội bộ 500
+        HTTP_401_UNAUTHORIZED,   // Hết hạn token / Chưa đăng nhập (SyncApiException 401)
+        HTTP_500_SERVER_ERROR,   // Server lỗi nội bộ (SyncApiException 500)
         PUSH_PARTIAL_SUCCESS,    // Push một phần (nửa thành công, nửa thất bại)
-        PULL_EMPTY,              // Pull về danh sách rỗng (không có thay đổi mới)
-        PULL_ERROR               // Push thì thành công nhưng Pull bị lỗi
-    }
-
-    public static class ApiException extends Exception {
-        private final int statusCode;
-
-        public ApiException(int statusCode, String message) {
-            super(message);
-            this.statusCode = statusCode;
-        }
-
-        public int getStatusCode() {
-            return statusCode;
-        }
+        PUSH_ALL_REJECTED,       // Toàn bộ bản ghi bị server từ chối
+        PULL_EMPTY,              // Pull về danh sách rỗng
+        PULL_PAGINATION,         // Lần 1 trả has_more = true, lần 2 trả has_more = false
+        PULL_ERROR               // Push ok nhưng Pull bị lỗi 500
     }
 
     private Scenario scenario = Scenario.SUCCESS;
@@ -79,21 +68,31 @@ public class MockSyncApi implements SyncApi {
                 throw new IOException("Failed to connect to mock server (Network timeout)");
 
             case HTTP_401_UNAUTHORIZED:
-                throw new ApiException(401, "Token expired or unauthorized");
+                throw new SyncApiException(401, "Token expired or unauthorized");
 
             case HTTP_500_SERVER_ERROR:
-                throw new ApiException(500, "Internal Server Error in database");
+                throw new SyncApiException(500, "Internal Server Error in database");
+
+            case PUSH_ALL_REJECTED:
+                List<String> allFailed = new ArrayList<>();
+                if (request.getChanges() != null) {
+                    for (SyncChange c : request.getChanges()) {
+                        allFailed.add(c.getChangeId() != null ? c.getChangeId() : c.getUuid());
+                    }
+                }
+                return new SyncPushResponse(false, new ArrayList<String>(), allFailed, "All items rejected");
 
             case PUSH_PARTIAL_SUCCESS:
                 List<String> synced = new ArrayList<>();
                 List<String> failed = new ArrayList<>();
                 if (request.getChanges() != null) {
                     for (int i = 0; i < request.getChanges().size(); i++) {
-                        String uuid = request.getChanges().get(i).getUuid();
+                        SyncChange c = request.getChanges().get(i);
+                        String id = c.getChangeId() != null ? c.getChangeId() : c.getUuid();
                         if (i % 2 == 0) {
-                            synced.add(uuid); // Chẵn thì thành công
+                            synced.add(id);
                         } else {
-                            failed.add(uuid); // Lẻ thì thất bại
+                            failed.add(id);
                         }
                     }
                 }
@@ -101,12 +100,13 @@ public class MockSyncApi implements SyncApi {
 
             case SUCCESS:
             case PULL_EMPTY:
+            case PULL_PAGINATION:
             case PULL_ERROR:
             default:
                 List<String> allSynced = new ArrayList<>();
                 if (request.getChanges() != null) {
                     for (SyncChange c : request.getChanges()) {
-                        allSynced.add(c.getUuid());
+                        allSynced.add(c.getChangeId() != null ? c.getChangeId() : c.getUuid());
                     }
                 }
                 return new SyncPushResponse(true, allSynced, new ArrayList<String>(), null);
@@ -122,23 +122,44 @@ public class MockSyncApi implements SyncApi {
             throw new IOException("Failed to connect to mock server while pulling");
         }
         if (scenario == Scenario.HTTP_401_UNAUTHORIZED) {
-            throw new ApiException(401, "Token expired during pull");
+            throw new SyncApiException(401, "Token expired during pull");
         }
         if (scenario == Scenario.PULL_ERROR || scenario == Scenario.HTTP_500_SERVER_ERROR) {
-            throw new ApiException(500, "Server failed to fetch seq changes");
+            throw new SyncApiException(500, "Server failed to fetch seq changes");
         }
-
         if (scenario == Scenario.PULL_EMPTY) {
             return new SyncPullResponse(sinceSeq, false, new ArrayList<SyncChange>());
         }
 
-        // Kịch bản mặc định có dữ liệu trả về
+        if (scenario == Scenario.PULL_PAGINATION) {
+            // Lần 1: trả has_more = true
+            if (pullCallCount == 1) {
+                List<SyncChange> page1 = new ArrayList<>();
+                JsonObject p1 = new JsonObject();
+                p1.addProperty("student_id", "SV_PAGE1");
+                SyncChange c1 = new SyncChange("cid_pull_1", "uuid_p1", "students", "INSERT", p1, System.currentTimeMillis());
+                c1.setSeq(sinceSeq + 1);
+                page1.add(c1);
+                return new SyncPullResponse(sinceSeq + 1, true, page1);
+            } else {
+                // Lần 2: trả has_more = false
+                List<SyncChange> page2 = new ArrayList<>();
+                JsonObject p2 = new JsonObject();
+                p2.addProperty("student_id", "SV_PAGE2");
+                SyncChange c2 = new SyncChange("cid_pull_2", "uuid_p2", "students", "INSERT", p2, System.currentTimeMillis());
+                c2.setSeq(sinceSeq + 2);
+                page2.add(c2);
+                return new SyncPullResponse(sinceSeq + 2, false, page2);
+            }
+        }
+
+        // Mặc định trả về 1 bản ghi
         List<SyncChange> changes = new ArrayList<>();
         JsonObject studentPayload = new JsonObject();
         studentPayload.addProperty("student_id", "SV_PULLED_01");
         studentPayload.addProperty("full_name", "Sinh Viên Kéo Từ Server");
 
-        SyncChange change1 = new SyncChange("pulled-uuid-001", "students", "INSERT", studentPayload, System.currentTimeMillis());
+        SyncChange change1 = new SyncChange("cid_pull_1", "pulled-uuid-001", "students", "INSERT", studentPayload, System.currentTimeMillis());
         change1.setSeq(sinceSeq + 1);
         changes.add(change1);
 

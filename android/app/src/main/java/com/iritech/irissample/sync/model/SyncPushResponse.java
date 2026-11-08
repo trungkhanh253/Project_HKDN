@@ -7,13 +7,18 @@ import java.util.List;
 
 /**
  * Phản hồi từ Server sau khi nhận Push (POST /api/v1/sync/push)
- * Hỗ trợ Partial Success: Cho biết rõ UUID nào thành công để xóa khỏi outbox,
- * UUID nào thất bại để giữ lại hoặc đánh dấu lỗi.
+ * Trả về synced_change_ids để xóa chính xác dòng outbox tương ứng.
  */
 public class SyncPushResponse implements Serializable {
 
     @SerializedName("success")
     private boolean success;
+
+    @SerializedName("synced_change_ids")
+    private List<String> syncedChangeIds;
+
+    @SerializedName("failed_change_ids")
+    private List<String> failedChangeIds;
 
     @SerializedName("synced_uuids")
     private List<String> syncedUuids;
@@ -25,14 +30,18 @@ public class SyncPushResponse implements Serializable {
     private String errorMessage;
 
     public SyncPushResponse() {
+        this.syncedChangeIds = new ArrayList<>();
+        this.failedChangeIds = new ArrayList<>();
         this.syncedUuids = new ArrayList<>();
         this.failedUuids = new ArrayList<>();
     }
 
-    public SyncPushResponse(boolean success, List<String> syncedUuids, List<String> failedUuids, String errorMessage) {
+    public SyncPushResponse(boolean success, List<String> syncedChangeIds, List<String> failedChangeIds, String errorMessage) {
         this.success = success;
-        this.syncedUuids = syncedUuids != null ? syncedUuids : new ArrayList<>();
-        this.failedUuids = failedUuids != null ? failedUuids : new ArrayList<>();
+        this.syncedChangeIds = syncedChangeIds != null ? syncedChangeIds : new ArrayList<>();
+        this.failedChangeIds = failedChangeIds != null ? failedChangeIds : new ArrayList<>();
+        this.syncedUuids = this.syncedChangeIds;
+        this.failedUuids = this.failedChangeIds;
         this.errorMessage = errorMessage;
     }
 
@@ -42,6 +51,28 @@ public class SyncPushResponse implements Serializable {
 
     public void setSuccess(boolean success) {
         this.success = success;
+    }
+
+    public List<String> getSyncedChangeIds() {
+        if (syncedChangeIds != null && !syncedChangeIds.isEmpty()) {
+            return syncedChangeIds;
+        }
+        return syncedUuids != null ? syncedUuids : new ArrayList<String>();
+    }
+
+    public void setSyncedChangeIds(List<String> syncedChangeIds) {
+        this.syncedChangeIds = syncedChangeIds;
+    }
+
+    public List<String> getFailedChangeIds() {
+        if (failedChangeIds != null && !failedChangeIds.isEmpty()) {
+            return failedChangeIds;
+        }
+        return failedUuids != null ? failedUuids : new ArrayList<String>();
+    }
+
+    public void setFailedChangeIds(List<String> failedChangeIds) {
+        this.failedChangeIds = failedChangeIds;
     }
 
     public List<String> getSyncedUuids() {
@@ -66,9 +97,5 @@ public class SyncPushResponse implements Serializable {
 
     public void setErrorMessage(String errorMessage) {
         this.errorMessage = errorMessage;
-    }
-
-    public boolean hasFailures() {
-        return failedUuids != null && !failedUuids.isEmpty();
     }
 }
