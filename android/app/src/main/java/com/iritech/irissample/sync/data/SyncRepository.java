@@ -21,9 +21,16 @@ public interface SyncRepository {
     void markSynced(List<String> changeIds);
 
     /**
-     * Đánh dấu các bản ghi bị lỗi (tăng retry_count, chuyển sang FAILED nếu vượt ngưỡng hoặc lỗi validation)
+     * Đánh dấu các bản ghi bị Server từ chối riêng lẻ (chuyển FAILED)
      */
     void markFailed(List<String> changeIds, String errorMessage);
+
+    /**
+     * Ghi nhận lỗi cho CẢ MỘT LÔ (khi server ném lỗi 4xx client validation cho cả request)
+     * Tăng retry_count cho từng bản ghi trong lô; nếu retry_count >= MAX_RETRIES thì chuyển FAILED
+     * để không làm kẹt cứng các lô tiếp theo phía sau.
+     */
+    void recordBatchFailure(List<String> changeIds, String errorMessage);
 
     /**
      * Ghi các bản ghi kéo từ Server về vào SQLite cục bộ (Idempotent Upsert)

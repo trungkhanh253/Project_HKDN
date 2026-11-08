@@ -10,9 +10,10 @@ import java.util.Map;
 /**
  * Lớp Fake Repository lưu trữ trên RAM mô phỏng chính xác hành vi của SQLite outbox thật:
  * 1. Chỉ lấy các bản ghi có trạng thái PENDING.
- * 2. markFailed: tăng retryCount, nếu >= MAX_RETRIES (5) hoặc lỗi validation thì chuyển FAILED.
- * 3. applyPulledChanges: Tự động tắt/bật cờ trigger trong try...finally.
- * 4. Idempotent Upsert theo table + uuid.
+ * 2. markFailed: chuyển trạng thái FAILED ngay lập tức khi server từ chối cụ thể.
+ * 3. recordBatchFailure: tăng retryCount, nếu >= MAX_RETRIES (5) thì chuyển FAILED.
+ * 4. applyPulledChanges: Tự động tắt/bật cờ trigger trong try...finally.
+ * 5. Idempotent Upsert theo table + uuid.
  */
 public class FakeSyncRepository implements SyncRepository {
 
@@ -84,11 +85,21 @@ public class FakeSyncRepository implements SyncRepository {
         if (changeIds == null || changeIds.isEmpty()) return;
         for (OutboxEntry entry : outboxEntries) {
             if (changeIds.contains(entry.changeId)) {
+                entry.status = OutboxStatus.FAILED;
+                entry.lastError = errorMessage;
+            }
+        }
+    }
+
+    @Override
+    public synchronized void recordBatchFailure(List<String> changeIds, String errorMessage) {
+        if (changeIds == null || changeIds.isEmpty()) return;
+        for (OutboxEntry entry : outboxEntries) {
+            if (changeIds.contains(entry.changeId)) {
                 entry.retryCount++;
                 entry.lastError = errorMessage;
-                // Nếu vượt quá số lần thử hoặc bị từ chối hẳn -> Chuyển sang FAILED vĩnh viễn
-                if (entry.retryCount >= MAX_RETRIES || (errorMessage != null && errorMessage.contains("rejected"))) {
-                    entry.status = OutboxStatus.FAILED;
+                if (entry.retryCount >= MAX_RETRIES) {
+                    entry.status = OutboxStatus.FAILED; // Vượt quá 5 lần thì chuyển FAILED
                 }
             }
         }
@@ -101,7 +112,7 @@ public class FakeSyncRepository implements SyncRepository {
         // Bật cờ chặn trigger và đảm bảo luôn reset trong khối finally
         this.isTriggerSuppressed = true;
         try {
-            // Mô phỏng Idempotent Upsert / Delete trong SQLite
+            // Mô phỏng Idempotent Upsert / Delete trong SQLite (Server Wins)
             for (SyncChange c : changes) {
                 String dbKey = c.getTableName() + "_" + c.getUuid();
                 if (c.isDelete()) {
