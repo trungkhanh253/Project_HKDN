@@ -10,11 +10,19 @@ except ImportError:
 
 BASE_URL = os.getenv("TEST_BASE_URL", "http://localhost:5000").rstrip("/")
 TEST_DB_URL = os.getenv("TEST_DATABASE_URL")
+# Kế hoạch ghi API có phiên bản /api/v1 (openapi.yml hiện chưa có tiền tố; xác nhận với Người 2)
+API_PREFIX = os.getenv("TEST_API_PREFIX", "/api/v1").rstrip("/")
 
 
 @pytest.fixture(scope="session")
 def base_url():
     return BASE_URL
+
+
+@pytest.fixture(scope="session")
+def v1(base_url):
+    """Địa chỉ gốc của API có phiên bản, ví dụ http://localhost:5000/api/v1"""
+    return f"{base_url}{API_PREFIX}"
 
 
 @pytest.fixture(scope="session")
