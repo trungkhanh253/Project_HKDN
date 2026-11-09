@@ -111,3 +111,4 @@ def extract_bearer_token() -> str:
         return auth_header[7:].strip()
     return None
 
+

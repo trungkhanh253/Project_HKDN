@@ -1,11 +1,54 @@
 import os
-from flask import Flask, jsonify
+from pathlib import Path
+import yaml
+from flask import Flask, Response, jsonify
 from flask_sqlalchemy import SQLAlchemy
 from flask_migrate import Migrate
 from werkzeug.exceptions import HTTPException
 
 db = SQLAlchemy()
 migrate = Migrate()
+
+
+def _load_openapi_text() -> str:
+    candidates = [
+        Path("/docs/openapi.yml"),
+        Path(__file__).resolve().parent.parent.parent / "docs" / "openapi.yml",
+        Path(__file__).resolve().parent / "openapi.yml",
+    ]
+    for path in candidates:
+        if path.is_file():
+            return path.read_text(encoding="utf-8")
+    raise FileNotFoundError("Không tìm thấy tệp đặc tả openapi.yml.")
+
+
+SWAGGER_UI_HTML = """<!DOCTYPE html>
+<html lang="vi">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Project_HKDN API Documentation (Swagger UI)</title>
+  <link rel="stylesheet" href="https://unpkg.com/swagger-ui-dist@5.11.0/swagger-ui.css" />
+  <style>
+    body { margin: 0; background: #fafafa; }
+  </style>
+</head>
+<body>
+  <div id="swagger-ui"></div>
+  <script src="https://unpkg.com/swagger-ui-dist@5.11.0/swagger-ui-bundle.js"></script>
+  <script>
+    window.onload = function() {
+      window.ui = SwaggerUIBundle({
+        url: "/openapi.json",
+        dom_id: "#swagger-ui",
+        deepLinking: true,
+        persistAuthorization: true
+      });
+    };
+  </script>
+</body>
+</html>
+"""
 
 
 def create_app():
@@ -33,6 +76,24 @@ def create_app():
     # Đăng ký blueprint ở cả /api/v1 (chuẩn có version) và gốc / (tương thích ngược)
     app.register_blueprint(api_bp, url_prefix="/api/v1")
     app.register_blueprint(api_bp, name="api_root", url_prefix="")
+
+    @app.route("/openapi.yml", methods=["GET"])
+    @app.route("/api/v1/openapi.yml", methods=["GET"])
+    def serve_openapi_yaml():
+        return Response(_load_openapi_text(), mimetype="application/yaml")
+
+    @app.route("/openapi.json", methods=["GET"])
+    @app.route("/api/v1/openapi.json", methods=["GET"])
+    def serve_openapi_json():
+        spec = yaml.safe_load(_load_openapi_text())
+        return jsonify(spec), 200
+
+    @app.route("/apidocs", methods=["GET"])
+    @app.route("/apidocs/", methods=["GET"])
+    @app.route("/swagger", methods=["GET"])
+    @app.route("/docs", methods=["GET"])
+    def serve_swagger_ui():
+        return Response(SWAGGER_UI_HTML, mimetype="text/html")
 
     # Xử lý lỗi chuẩn JSON {"error": {"code": ..., "message": ...}}
     @app.errorhandler(400)
@@ -113,4 +174,42 @@ def create_app():
         seed_default_admins()
         print("Đã khởi tạo tài khoản Admin mẫu thành công.")
 
+    @app.cli.command("verify-phase2")
+    def verify_phase2_command():
+        """Kiểm tra toàn bộ hạ tầng Giai đoạn 2: PostgreSQL, pgvector(192), 6 bảng & Trigger seq."""
+        import sqlalchemy as sa
+
+        ext = db.session.execute(
+            sa.text("SELECT extversion FROM pg_extension WHERE extname = 'vector'")
+        ).scalar()
+        print(f"[1] Extension pgvector: {'OK (v' + str(ext) + ')' if ext else 'MISSING'}")
+
+        seq_exists = db.session.execute(
+            sa.text("SELECT to_regclass('public.global_sync_seq')")
+        ).scalar()
+        print(f"[2] Sequence global_sync_seq: {'OK' if seq_exists else 'MISSING'}")
+
+        tables = [
+            "admin",
+            "subjects",
+            "students",
+            "enrollments",
+            "checkin_history",
+            "email_recipients",
+        ]
+        for t in tables:
+            reg = db.session.execute(
+                sa.text("SELECT to_regclass(:tbl)"), {"tbl": f"public.{t}"}
+            ).scalar()
+            print(f"    - Bảng {t:<18}: {'OK' if reg else 'MISSING'}")
+
+        vec_type = db.session.execute(
+            sa.text(
+                "SELECT format_type(a.atttypid, a.atttypmod) FROM pg_attribute a "
+                "WHERE a.attrelid = 'students'::regclass AND a.attname = 'face_embedding'"
+            )
+        ).scalar()
+        print(f"[3] Kiểu dữ liệu face_embedding: {vec_type}")
+
     return app
+

@@ -254,3 +254,4 @@ class EmailRecipient(db.Model, SyncMetadataMixin):
             "deleted_at": _format_dt(self.deleted_at),
             "seq": self.seq,
         }
+
