@@ -65,6 +65,10 @@ android {
         targetCompatibility JavaVersion.VERSION_1_8
     }
 
+    testOptions {
+        unitTests.returnDefaultValues = true
+    }
+
     packagingOptions {
         doNotStrip "**/libmqel_irisreg704.so"
         doNotStrip "**/libmqel_irisreg704s.so"
@@ -110,4 +114,12 @@ dependencies {
     implementation 'com.google.mlkit:face-detection:16.0.5'
     implementation 'org.tensorflow:tensorflow-lite:2.14.0'
     implementation 'org.tensorflow:tensorflow-lite-support:0.4.4'
+
+    // AndroidX WorkManager (ban 2.5.0 tuong thich voi compileSdkVersion 29)
+    implementation 'androidx.work:work-runtime:2.5.0'
+
+    // Retrofit 2 & OkHttp (cho giao tiep mang va dong bo)
+    implementation 'com.squareup.retrofit2:retrofit:2.9.0'
+    implementation 'com.squareup.retrofit2:converter-gson:2.9.0'
+    implementation 'com.squareup.okhttp3:logging-interceptor:4.9.3'
 }
