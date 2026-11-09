@@ -48,3 +48,27 @@ class BaseRepository:
         model_instance.updated_at = now
         db.session.commit()
         return model_instance
+
+    @staticmethod
+    def find_nearest_by_embedding(model_class, query_embedding, limit: int = 1, max_distance: float = None):
+        """
+        Truy vấn tìm kiếm sinh trắc học khuôn mặt gần nhất bằng pgvector (Cosine Distance <=>).
+        Chỉ xét các bản ghi chưa xóa mềm (deleted_at IS NULL) và có face_embedding khác NULL.
+        """
+        if not hasattr(model_class, "face_embedding"):
+            raise ValueError(f"Model {model_class.__name__} không có trường face_embedding.")
+        if not isinstance(query_embedding, (list, tuple)) or len(query_embedding) != 192:
+            raise ValueError("Vector truy vấn (query_embedding) phải có đúng 192 chiều.")
+
+        vec = [float(x) for x in query_embedding]
+        distance_expr = model_class.face_embedding.cosine_distance(vec)
+
+        query = model_class.query.filter(
+            model_class.deleted_at.is_(None),
+            model_class.face_embedding.isnot(None),
+        )
+        if max_distance is not None:
+            query = query.filter(distance_expr <= float(max_distance))
+
+        return query.order_by(distance_expr.asc()).limit(max(1, int(limit))).all()
+
