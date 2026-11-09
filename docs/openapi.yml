@@ -1,52 +1,867 @@
-openapi: 3.0.0
+openapi: 3.0.3
 info:
-  title: API Hệ thống điểm danh sinh trắc học (Project_HKDN)
+  title: API Hệ thống Điểm danh Sinh trắc học (Project_HKDN)
   version: 1.0.0
+  description: |
+    Tài liệu đặc tả RESTful API cho hệ thống Điểm danh Sinh trắc học Khuôn mặt (Project_HKDN).
+
+    ### Quy ước chung
+    1. **Tiền tố đường dẫn (Base Path):** Tất cả endpoint hỗ trợ tiền tố `/api/v1` (khuyến nghị) và tương thích ngược ở gốc `/`.
+    2. **Xác thực (Authentication):**
+       - Đăng nhập qua `POST /api/v1/auth/login` bằng `email` và `password` để nhận `access_token` và `refresh_token`.
+       - Gửi kèm header `Authorization: Bearer <access_token>` cho các request cần xác thực.
+       - Tạo sẵn tài khoản Admin mẫu để test bằng lệnh:
+         `docker compose exec api python seed_admin.py` (Tài khoản: `admin@hkdn.edu.vn` / `admin123` hoặc `lecturer@hkdn.edu.vn` / `lecturer123`).
+    3. **Cơ chế Đồng bộ 2 chiều (`/sync/push` & `/sync/pull`):**
+       - **6 bảng chuẩn:** `admin`, `subjects`, `students`, `enrollments`, `checkin_history`, `email_recipients`.
+       - **Nhận diện bản ghi (Identity):** Tất cả 6 bảng đều có cột `uuid` (`UNIQUE NOT NULL`). Khi `push`, Server ưu tiên khớp theo `uuid`, nếu chưa có sẽ khớp theo khóa tự nhiên của từng bảng:
+         - `admin`: `uuid` hoặc `admin_id` / `email`
+         - `subjects`: `uuid` hoặc `subject_id`
+         - `students`: `uuid` hoặc `student_id`
+         - `enrollments`: `uuid` hoặc cặp khóa chính `(student_id, subject_id)`
+         - `checkin_history`: `uuid` (hoặc `checkin_id`)
+         - `email_recipients`: `uuid` hoặc cặp duy nhất `(subject_id, email_address)`
+       - **Ai gán `seq`:** Do **PostgreSQL trên Server** tự động gán qua 1 Sequence chung toàn cục (`global_sync_seq`) và Trigger `BEFORE INSERT OR UPDATE` (`bump_sync_metadata`). Khi thêm mới (`INSERT`), sửa (`UPDATE`) hoặc xóa mềm (`deleted_at != null`), `seq` luôn tự động tăng. Client không cần tự gán `seq`.
+       - **Giải quyết xung đột (Conflict Resolution):** Theo chiến lược **Last-Write-Wins (LWW)** dựa vào `updated_at`. Nếu bản ghi client đẩy lên có `updated_at < existing.updated_at` trên Server thì bản ghi đó được giữ nguyên trên Server và tính vào `skipped`. Push lặp lại cùng dữ liệu (Idempotent) sẽ cập nhật tại chỗ (Upsert), **không tạo bản ghi trùng**.
+       - **Xóa mềm (Soft Delete):** Bản ghi xóa mềm có `deleted_at` khác `null` (ISO-8601 timestamp). `/sync/pull` **có trả về** các bản ghi đã xóa mềm (`deleted_at != null`) để Client cập nhật trạng thái xóa dưới SQLite local.
+    4. **Định dạng lỗi thống nhất:**
+       Mọi phản hồi lỗi (`400`, `401`, `404`, `409`, `422`, `500`) đều trả về `application/json` theo cấu trúc:
+       ```json
+       {
+         "error": {
+           "code": "MÃ_LỖI",
+           "message": "Mô tả chi tiết lỗi"
+         }
+       }
+       ```
+
+servers:
+  - url: http://localhost:5000/api/v1
+    description: Local Development Server (v1)
+  - url: http://localhost:5000
+    description: Root Alias (tương thích ngược cho /health)
+
+components:
+  securitySchemes:
+    BearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+      description: "Nhập JWT token theo cú pháp: `Bearer <token>`"
+
+  schemas:
+    ErrorResponse:
+      type: object
+      required:
+        - error
+      properties:
+        error:
+          type: object
+          required:
+            - code
+            - message
+          properties:
+            code:
+              type: string
+              example: "VALIDATION_ERROR"
+            message:
+              type: string
+              example: "Dữ liệu đầu vào không hợp lệ."
+            details:
+              type: object
+              nullable: true
+
+    AdminRecord:
+      type: object
+      required:
+        - admin_id
+        - email
+        - full_name
+      properties:
+        admin_id:
+          type: string
+          example: "ADM_001"
+        email:
+          type: string
+          format: email
+          example: "lecturer@hkdn.edu.vn"
+        password:
+          type: string
+          description: "Mật khẩu dạng plain-text hoặc SHA-256 hex (chỉ gửi khi tạo/đổi mật khẩu)"
+          example: "lecturer123"
+        full_name:
+          type: string
+          example: "Nguyễn Văn Giảng"
+        date_of_birth:
+          type: string
+          nullable: true
+          example: "1985-05-15"
+        phone:
+          type: string
+          nullable: true
+          example: "0909876543"
+        gender:
+          type: string
+          nullable: true
+          example: "Nam"
+        photo_path:
+          type: string
+          nullable: true
+        description:
+          type: string
+          nullable: true
+        role:
+          type: string
+          enum: [SUPER_ADMIN, ADMIN]
+          default: ADMIN
+        admin_code:
+          type: string
+          nullable: true
+          example: "GV001"
+        is_first_login:
+          type: integer
+          default: 1
+        has_iris:
+          type: integer
+          default: 0
+        face_embedding:
+          type: array
+          nullable: true
+          items:
+            type: number
+            format: float
+          minItems: 192
+          maxItems: 192
+          description: "Vector đặc trưng khuôn mặt đúng 192 chiều (MobileFaceNet)"
+        uuid:
+          type: string
+          format: uuid
+          example: "00000000-0000-4000-8000-000000000002"
+        updated_at:
+          type: string
+          format: date-time
+          example: "2026-11-09T10:00:00Z"
+        deleted_at:
+          type: string
+          format: date-time
+          nullable: true
+          example: null
+        seq:
+          type: integer
+          readOnly: true
+          example: 1
+
+    SubjectRecord:
+      type: object
+      required:
+        - subject_id
+        - subject_name
+      properties:
+        subject_id:
+          type: string
+          example: "IT001"
+        subject_name:
+          type: string
+          example: "Nhập môn Lập trình"
+        time_slot:
+          type: string
+          nullable: true
+          example: "Thứ 2 (07:30 - 09:30)"
+        created_by:
+          type: string
+          nullable: true
+          description: "FK trỏ tới admin.admin_id"
+          example: "SADM_001"
+        instructor_id:
+          type: string
+          nullable: true
+          description: "FK trỏ tới admin.admin_id"
+          example: "ADM_001"
+        subject_status:
+          type: string
+          default: "ASSIGNED"
+          example: "ASSIGNED"
+        created_at:
+          type: string
+          nullable: true
+          example: "2026-09-01T08:00:00"
+        semester_start_date:
+          type: string
+          nullable: true
+          example: "01/09/2026"
+        semester_end_date:
+          type: string
+          nullable: true
+          example: "30/11/2026"
+        uuid:
+          type: string
+          format: uuid
+          example: "11111111-2222-4333-8444-555555555555"
+        updated_at:
+          type: string
+          format: date-time
+          example: "2026-11-09T10:05:00Z"
+        deleted_at:
+          type: string
+          format: date-time
+          nullable: true
+          example: null
+        seq:
+          type: integer
+          readOnly: true
+          example: 2
+
+    StudentRecord:
+      type: object
+      required:
+        - student_id
+      properties:
+        student_id:
+          type: string
+          example: "SV2026001"
+        full_name:
+          type: string
+          nullable: true
+          example: "Trần Thị B"
+        email:
+          type: string
+          nullable: true
+          example: "sv001@student.edu.vn"
+        phone:
+          type: string
+          nullable: true
+          example: "0912345678"
+        photo_path:
+          type: string
+          nullable: true
+        checkin_password:
+          type: string
+          nullable: true
+          example: "1234"
+        face_embedding:
+          type: array
+          nullable: true
+          items:
+            type: number
+            format: float
+          minItems: 192
+          maxItems: 192
+        uuid:
+          type: string
+          format: uuid
+          example: "22222222-3333-4444-8555-666666666666"
+        updated_at:
+          type: string
+          format: date-time
+          example: "2026-11-09T10:10:00Z"
+        deleted_at:
+          type: string
+          format: date-time
+          nullable: true
+          example: null
+        seq:
+          type: integer
+          readOnly: true
+          example: 3
+
+    EnrollmentRecord:
+      type: object
+      required:
+        - student_id
+        - subject_id
+      properties:
+        student_id:
+          type: string
+          example: "SV2026001"
+        subject_id:
+          type: string
+          example: "IT001"
+        enrollment_status:
+          type: string
+          nullable: true
+          example: "Enrolled"
+        uuid:
+          type: string
+          format: uuid
+          example: "33333333-4444-4555-8666-777777777777"
+        updated_at:
+          type: string
+          format: date-time
+          example: "2026-11-09T10:15:00Z"
+        deleted_at:
+          type: string
+          format: date-time
+          nullable: true
+          example: null
+        seq:
+          type: integer
+          readOnly: true
+          example: 4
+
+    CheckinHistoryRecord:
+      type: object
+      required:
+        - student_id
+        - subject_id
+      properties:
+        checkin_id:
+          type: integer
+          example: 1
+        student_id:
+          type: string
+          example: "SV2026001"
+        subject_id:
+          type: string
+          example: "IT001"
+        checkin_time:
+          type: string
+          example: "07:35:12"
+        checkin_date:
+          type: string
+          example: "2026-11-09"
+        uuid:
+          type: string
+          format: uuid
+          example: "44444444-5555-4666-8777-888888888888"
+        updated_at:
+          type: string
+          format: date-time
+          example: "2026-11-09T10:20:00Z"
+        deleted_at:
+          type: string
+          format: date-time
+          nullable: true
+          example: null
+        seq:
+          type: integer
+          readOnly: true
+          example: 5
+
+    EmailRecipientRecord:
+      type: object
+      required:
+        - subject_id
+        - email_address
+      properties:
+        email_id:
+          type: integer
+          example: 1
+        subject_id:
+          type: string
+          example: "IT001"
+        email_address:
+          type: string
+          format: email
+          example: "academic_affairs@hkdn.edu.vn"
+        recipient_name:
+          type: string
+          nullable: true
+          example: "Phòng Đào Tạo"
+        added_date:
+          type: string
+          nullable: true
+          example: "2026-11-01"
+        is_selected:
+          type: boolean
+          default: true
+        uuid:
+          type: string
+          format: uuid
+          example: "55555555-6666-4777-8888-999999999999"
+        updated_at:
+          type: string
+          format: date-time
+          example: "2026-11-09T10:25:00Z"
+        deleted_at:
+          type: string
+          format: date-time
+          nullable: true
+          example: null
+        seq:
+          type: integer
+          readOnly: true
+          example: 6
+
 paths:
   /health:
     get:
+      tags: [System]
       summary: Kiểm tra trạng thái hoạt động của Server
       responses:
         '200':
           description: Server hoạt động bình thường
           content:
             application/json:
+              schema:
+                type: object
+                properties:
+                  status:
+                    type: string
+                    example: "healthy"
               example:
                 status: "healthy"
 
-  /auth/refresh:
+  /auth/login:
     post:
-      summary: Làm mới Token xác thực
+      tags: [Authentication]
+      summary: Đăng nhập tài khoản Admin / Giảng viên để nhận JWT Token
+      description: |
+        Xác thực bằng `email` (hoặc `username` / `admin_id`) và `password`.
+        Mật khẩu lưu trong bảng `admin` được băm bằng `SHA-256` (đồng bộ với `DatabaseHelper.java` trên Android).
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+                - password
+              properties:
+                email:
+                  type: string
+                  example: "admin@hkdn.edu.vn"
+                username:
+                  type: string
+                  description: "Tùy chọn thay thế cho email (có thể truyền email, admin_id hoặc admin_code)"
+                password:
+                  type: string
+                  example: "admin123"
+            example:
+              email: "admin@hkdn.edu.vn"
+              password: "admin123"
       responses:
         '200':
-          description: Cấp lại access_token mới
+          description: Đăng nhập thành công
+          content:
+            application/json:
+              example:
+                access_token: "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9..."
+                refresh_token: "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9..."
+                token_type: "Bearer"
+                expires_in: 3600
+                admin:
+                  admin_id: "SADM_001"
+                  uuid: "00000000-0000-4000-8000-000000000001"
+                  email: "admin@hkdn.edu.vn"
+                  full_name: "Quản Trị Viên Hệ Thống (Super Admin)"
+                  role: "SUPER_ADMIN"
+                  is_first_login: 0
+        '401':
+          description: Sai thông tin đăng nhập
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+              example:
+                error:
+                  code: "INVALID_CREDENTIALS"
+                  message: "Email hoặc mật khẩu không chính xác."
+        '422':
+          description: Thiếu trường email hoặc password
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  /auth/refresh:
+    post:
+      tags: [Authentication]
+      summary: Làm mới Access Token bằng Refresh Token
+      security:
+        - BearerAuth: []
+      responses:
+        '200':
+          description: Cấp lại access_token mới thành công
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  access_token:
+                    type: string
+                  token_type:
+                    type: string
+                    example: "Bearer"
+                  expires_in:
+                    type: integer
+                    example: 3600
+              example:
+                access_token: "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9..."
+                token_type: "Bearer"
+                expires_in: 3600
+        '401':
+          description: Thiếu token hoặc token không hợp lệ / đã hết hạn
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+              example:
+                error:
+                  code: "INVALID_TOKEN"
+                  message: "Chữ ký JWT không hợp lệ."
 
   /import/csv:
     post:
-      summary: Đưa tệp CSV chứa danh sách sinh viên vào Redis Queue xử lý bất đồng bộ
+      tags: [CSV Import & Background Jobs]
+      summary: Đưa tệp CSV vào Redis Queue (RQ) để xử lý bất đồng bộ
+      description: |
+        Hỗ trợ import CSV cho 3 loại dữ liệu thông qua trường form `type` (hoặc tự động nhận diện dựa trên tên cột header):
+        1. **Sinh viên (`type=students`, mặc định):**
+           - Cột bắt buộc: `student_id`, `full_name`
+           - Cột tùy chọn: `phone`, `email`, `checkin_password`, `photo_path`, `subject_id` (nếu có sẽ tự động ghi danh vào bảng `enrollments`), `class_name`
+        2. **Môn học (`type=subjects`):**
+           - Cột bắt buộc: `subject_id`, `subject_name`
+           - Cột tùy chọn: `time_slot`, `created_by`, `instructor_id`, `subject_status`, `semester_start_date`, `semester_end_date`
+        3. **Giảng viên / Admin (`type=admin`):**
+           - Cột bắt buộc: `email`, `full_name` (và `admin_id`, nếu trống sẽ tự sinh)
+           - Cột tùy chọn: `password`, `phone`, `date_of_birth`, `gender`, `role`, `admin_code`, `description`
       requestBody:
         required: true
         content:
           multipart/form-data:
             schema:
               type: object
+              required:
+                - file
               properties:
                 file:
                   type: string
                   format: binary
+                  description: "Tệp CSV mã hóa UTF-8"
+                type:
+                  type: string
+                  enum: [students, subjects, admin]
+                  default: students
+                  description: "Loại dữ liệu cần import (nếu bỏ trống sẽ tự nhận diện qua header CSV)"
+                subject_id:
+                  type: string
+                  description: "Mã môn học (tùy chọn) để tự động đăng ký sinh viên vào bảng enrollments"
       responses:
         '202':
-          description: Đã nhận file thành công và trả về job_id
+          description: Đã nhận file thành công và đưa vào hàng đợi xử lý
+          content:
+            application/json:
+              schema:
+                type: object
+                required:
+                  - job_id
+                  - status
+                properties:
+                  job_id:
+                    type: string
+                    example: "c7a8d9e0-1234-4567-89ab-cdef01234567"
+                  status:
+                    type: string
+                    example: "queued"
+                  message:
+                    type: string
+                    example: "Đã nhận file CSV và đưa vào hàng đợi xử lý."
+              example:
+                job_id: "c7a8d9e0-1234-4567-89ab-cdef01234567"
+                status: "queued"
+                message: "Đã nhận file CSV và đưa vào hàng đợi xử lý."
+        '400':
+          description: Thiếu trường `file` hoặc tệp CSV rỗng
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+              example:
+                error:
+                  code: "MISSING_FILE"
+                  message: "Thiếu tệp CSV tải lên (trường 'file' trong multipart/form-data là bắt buộc)."
 
   /jobs/{id}:
     get:
-      summary: Kiểm tra tiến độ xử lý tác vụ background job
+      tags: [CSV Import & Background Jobs]
+      summary: Kiểm tra tiến độ và kết quả xử lý của tác vụ nền (Background Job)
       parameters:
         - name: id
           in: path
           required: true
           schema:
             type: string
+          description: "Job ID nhận được từ API `/import/csv`"
       responses:
         '200':
-          description: Trạng thái chi tiết của job (queued, finished, failed)
+          description: Trạng thái chi tiết của job (`queued`, `started`, `finished`, `failed`)
+          content:
+            application/json:
+              schema:
+                type: object
+                required:
+                  - job_id
+                  - status
+                properties:
+                  job_id:
+                    type: string
+                  status:
+                    type: string
+                    enum: [queued, started, deferred, finished, stopped, scheduled, canceled, failed]
+                  created_at:
+                    type: string
+                    format: date-time
+                    nullable: true
+                  ended_at:
+                    type: string
+                    format: date-time
+                    nullable: true
+                  result:
+                    type: object
+                    nullable: true
+                    properties:
+                      type:
+                        type: string
+                      total_rows:
+                        type: integer
+                      imported:
+                        type: integer
+                      updated:
+                        type: integer
+                      skipped:
+                        type: integer
+                      errors:
+                        type: array
+                        items:
+                          type: string
+                  error:
+                    type: string
+                    nullable: true
+              example:
+                job_id: "c7a8d9e0-1234-4567-89ab-cdef01234567"
+                status: "finished"
+                created_at: "2026-11-09T10:30:00Z"
+                ended_at: "2026-11-09T10:30:01Z"
+                result:
+                  type: "students"
+                  total_rows: 2
+                  imported: 2
+                  updated: 0
+                  skipped: 0
+                  errors: []
+                error: null
+        '404':
+          description: Job ID không tồn tại trên hệ thống
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+              example:
+                error:
+                  code: "JOB_NOT_FOUND"
+                  message: "Không tìm thấy tác vụ nền với id 'does-not-exist-123'."
+
+  /sync/push:
+    post:
+      tags: [Synchronization]
+      summary: Đẩy các bản ghi thêm mới, cập nhật và xóa mềm từ Client lên Server
+      description: |
+        - Server tự động xử lý các bảng theo thứ tự từ bảng cha đến bảng con:
+          `admin` -> `subjects` -> `students` -> `enrollments` -> `checkin_history` -> `email_recipients`.
+        - **Thêm mới (Insert):** Bản ghi có `uuid` / khóa chính chưa tồn tại trên Server, `deleted_at: null`.
+        - **Cập nhật (Update):** Bản ghi đã tồn tại, có `updated_at` mới hơn hoặc bằng bản ghi trên Server, `deleted_at: null`.
+        - **Xóa mềm (Soft Delete):** Bản ghi có `deleted_at` là chuỗi thời gian ISO-8601 (khác `null`).
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                admin:
+                  type: array
+                  items:
+                    $ref: '#/components/schemas/AdminRecord'
+                subjects:
+                  type: array
+                  items:
+                    $ref: '#/components/schemas/SubjectRecord'
+                students:
+                  type: array
+                  items:
+                    $ref: '#/components/schemas/StudentRecord'
+                enrollments:
+                  type: array
+                  items:
+                    $ref: '#/components/schemas/EnrollmentRecord'
+                checkin_history:
+                  type: array
+                  items:
+                    $ref: '#/components/schemas/CheckinHistoryRecord'
+                email_recipients:
+                  type: array
+                  items:
+                    $ref: '#/components/schemas/EmailRecipientRecord'
+            example:
+              students:
+                - student_id: "SV2026001"
+                  full_name: "Nguyễn Văn A (Thêm mới)"
+                  email: "sv001@student.edu.vn"
+                  phone: "0901112222"
+                  checkin_password: "1111"
+                  uuid: "22222222-3333-4444-8555-666666666601"
+                  updated_at: "2026-11-09T11:00:00Z"
+                  deleted_at: null
+                - student_id: "SV2026002"
+                  full_name: "Trần Thị B (Đã sửa tên & SĐT)"
+                  email: "sv002@student.edu.vn"
+                  phone: "0903334444"
+                  uuid: "22222222-3333-4444-8555-666666666602"
+                  updated_at: "2026-11-09T11:05:00Z"
+                  deleted_at: null
+                - student_id: "SV2026003"
+                  full_name: "Lê Văn C (Xóa mềm)"
+                  uuid: "22222222-3333-4444-8555-666666666603"
+                  updated_at: "2026-11-09T11:10:00Z"
+                  deleted_at: "2026-11-09T11:10:00Z"
+              subjects:
+                - subject_id: "IT001"
+                  subject_name: "Trí tuệ Nhân tạo"
+                  time_slot: "Thứ 3 (09:30 - 11:30)"
+                  subject_status: "UNASSIGNED"
+                  uuid: "11111111-2222-4333-8444-555555555501"
+                  updated_at: "2026-11-09T11:00:00Z"
+                  deleted_at: null
+              enrollments:
+                - student_id: "SV2026001"
+                  subject_id: "IT001"
+                  enrollment_status: "Enrolled"
+                  uuid: "33333333-4444-4555-8666-777777777701"
+                  updated_at: "2026-11-09T11:02:00Z"
+                  deleted_at: null
+      responses:
+        '200':
+          description: Đồng bộ đẩy lên thành công
+          content:
+            application/json:
+              example:
+                status: "ok"
+                applied:
+                  admin: 0
+                  subjects: 1
+                  students: 3
+                  enrollments: 1
+                  checkin_history: 0
+                  email_recipients: 0
+                skipped:
+                  admin: 0
+                  subjects: 0
+                  students: 0
+                  enrollments: 0
+                  checkin_history: 0
+                  email_recipients: 0
+                latest_seq: 15
+        '409':
+          description: Vi phạm khóa ngoại (ví dụ đẩy enrollments cho student_id hoặc subject_id chưa tồn tại) hoặc xung đột Unique
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+              example:
+                error:
+                  code: "INTEGRITY_CONFLICT"
+                  message: "Vi phạm ràng buộc khóa ngoại (Foreign Key) hoặc tính duy nhất (Unique) khi đồng bộ."
+        '422':
+          description: Dữ liệu sai định dạng (thiếu trường bắt buộc hoặc face_embedding không đúng 192 chiều)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+              example:
+                error:
+                  code: "VALIDATION_ERROR"
+                  message: "Trường face_embedding phải là mảng số thực có đúng 192 chiều."
+
+  /sync/pull:
+    get:
+      tags: [Synchronization]
+      summary: Kéo danh sách các bản ghi thay đổi từ Server có `seq > after_seq`
+      description: |
+        - Trả về tất cả các bản ghi có `seq > after_seq` trên cả 6 bảng, sắp xếp theo `seq` tăng dần.
+        - Giới hạn mặc định mỗi lần là `limit = 100` (tối đa `500` bản ghi/lần).
+        - Nếu còn dữ liệu phía sau, `has_more` sẽ là `true`; Client tiếp tục gọi `/sync/pull?after_seq=<next_seq>` cho đến khi `has_more = false`.
+        - **Lưu ý:** Kết quả trả về **bao gồm cả các bản ghi đã xóa mềm** (`deleted_at != null`) để Client đồng bộ trạng thái xóa.
+      parameters:
+        - name: after_seq
+          in: query
+          required: false
+          schema:
+            type: integer
+            default: 0
+            minimum: 0
+          description: "Số sequence lớn nhất mà Client đã đồng bộ ở lần trước (mặc định 0)"
+        - name: limit
+          in: query
+          required: false
+          schema:
+            type: integer
+            default: 100
+            minimum: 1
+            maximum: 500
+          description: "Số lượng bản ghi tối đa trả về trong 1 lần pull (mặc định 100, tối đa 500)"
+      responses:
+        '200':
+          description: Danh sách thay đổi kèm thông tin phân trang sequence
+          content:
+            application/json:
+              example:
+                after_seq: 10
+                next_seq: 15
+                latest_seq: 15
+                limit: 100
+                has_more: false
+                changes:
+                  admin: []
+                  subjects:
+                    - subject_id: "IT001"
+                      subject_name: "Trí tuệ Nhân tạo"
+                      time_slot: "Thứ 3 (09:30 - 11:30)"
+                      created_by: null
+                      instructor_id: null
+                      subject_status: "UNASSIGNED"
+                      created_at: null
+                      semester_start_date: null
+                      semester_end_date: null
+                      uuid: "11111111-2222-4333-8444-555555555501"
+                      updated_at: "2026-11-09T11:00:00Z"
+                      deleted_at: null
+                      seq: 11
+                  students:
+                    - student_id: "SV2026001"
+                      full_name: "Nguyễn Văn A (Thêm mới)"
+                      email: "sv001@student.edu.vn"
+                      phone: "0901112222"
+                      photo_path: null
+                      checkin_password: "1111"
+                      face_embedding: null
+                      uuid: "22222222-3333-4444-8555-666666666601"
+                      updated_at: "2026-11-09T11:00:00Z"
+                      deleted_at: null
+                      seq: 12
+                    - student_id: "SV2026003"
+                      full_name: "Lê Văn C (Xóa mềm)"
+                      email: null
+                      phone: null
+                      photo_path: null
+                      checkin_password: null
+                      face_embedding: null
+                      uuid: "22222222-3333-4444-8555-666666666603"
+                      updated_at: "2026-11-09T11:10:00Z"
+                      deleted_at: "2026-11-09T11:10:00Z"
+                      seq: 14
+                  enrollments:
+                    - student_id: "SV2026001"
+                      subject_id: "IT001"
+                      enrollment_status: "Enrolled"
+                      uuid: "33333333-4444-4555-8666-777777777701"
+                      updated_at: "2026-11-09T11:02:00Z"
+                      deleted_at: null
+                      seq: 15
+                  checkin_history: []
+                  email_recipients: []
+        '400':
+          description: Tham số `after_seq` hoặc `limit` không hợp lệ
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'

@@ -1,6 +1,6 @@
 # Project_HKDN
 
- Ứng dụng điểm danh bằng dữ liệu khuôn mặt của IriTech **Android Client** (hỗ trợ chế độ độc lập và đồng bộ server) và **Flask Backend** sử dụng cơ sở dữ liệu **PostgreSQL** tích hợp extension **pgvector** nhận diện khuôn mặt.
+Ứng dụng điểm danh bằng dữ liệu khuôn mặt của IriTech **Android Client** (hỗ trợ chế độ độc lập và đồng bộ server) và **Flask Backend** sử dụng cơ sở dữ liệu **PostgreSQL** tích hợp extension **pgvector** nhận diện khuôn mặt.
 
 ---
 
@@ -19,22 +19,22 @@
 
 ---
 
-## 📊 Cấu trúc cơ sở dữ liệu (6 Bảng Schema)
+## Cấu trúc cơ sở dữ liệu (6 Bảng Schema)
 
-Hệ thống quản lý đồng bộ 6 bảng cốt lõi với cơ chế tăng tự động `seq`:
-1. **`admin`**: Quản lý tài khoản quản trị hệ thống.
-2. **`student`**: Quản lý thông tin sinh viên và trường `face_embedding` (`VECTOR(192)`).
-3. **`subject`**: Quản lý danh mục học phần / môn học.
-4. **`enrollment`**: Quản lý danh sách sinh viên đăng ký học phần.
+Hệ thống quản lý đồng bộ 6 bảng cốt lõi (`docs/schema.md`) với cột `uuid`, `updated_at`, `deleted_at` và 1 sequence chung `global_sync_seq` + trigger tự động tăng `seq` khi `INSERT` / `UPDATE`:
+1. **`admin`**: Quản lý tài khoản quản trị viên và giảng viên hệ thống.
+2. **`students`**: Quản lý thông tin sinh viên và trường `face_embedding` (`VECTOR(192)`).
+3. **`subjects`**: Quản lý danh mục học phần / môn học.
+4. **`enrollments`**: Quản lý danh sách sinh viên đăng ký học phần.
 5. **`checkin_history`**: Lưu trữ lịch sử điểm danh chi tiết.
-6. **`email_recipient`**: Quản lý danh sách nhận thông báo email.
+6. **`email_recipients`**: Quản lý danh sách nhận thông báo báo cáo qua email.
 
 ---
 
 ## Cơ chế đồng bộ (Sync Mechanism)
 
-* **Sync/Pull:** Đồng bộ dữ liệu từ server về client dựa trên tham số `after_seq` để tối ưu băng thông và cập nhật các thay đổi mới nhất.
-* **Sync/Push:** Tiếp nhận và xử lý dữ liệu đẩy lên từ client cho toàn bộ 6 bảng schema một cách nhất quán.
+* **Sync/Pull (`GET /api/v1/sync/pull`):** Đồng bộ dữ liệu từ server về client dựa trên tham số `after_seq` (kèm `next_seq`, `has_more`, `limit`) để tối ưu băng thông và cập nhật các thay đổi mới nhất (bao gồm cả bản ghi xóa mềm `deleted_at`).
+* **Sync/Push (`POST /api/v1/sync/push`):** Tiếp nhận và xử lý dữ liệu đẩy lên từ client (thêm mới, sửa, xóa mềm) cho toàn bộ 6 bảng schema theo chiến lược Last-Write-Wins (`updated_at`).
 
 ---
 
@@ -51,4 +51,6 @@ Chạy lệnh sau tại thư mục gốc của dự án để build và khởi c
 
 ```bash
 docker compose up --build -d
->>>>>>> fe47247 (<Tuan 1>)
+docker compose exec api flask --app "app:create_app()" db upgrade
+docker compose exec api python seed_admin.py
+```

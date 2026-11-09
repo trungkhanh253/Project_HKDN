@@ -21,23 +21,29 @@ docker compose ps
 ```
 Phải thấy 4 container `hkdn_postgres`, `hkdn_redis`, `hkdn_api`, `hkdn_worker` ở trạng thái Up. (Cảnh báo `version is obsolete` bỏ qua được.)
 
-Kiểm tra API (cần route `/health` đã được nhóm Server viết):
+Kiểm tra API:
 ```powershell
 curl.exe http://localhost:5000/health
 ```
 
-## 4. Migration (tạo bảng)
+## 4. Migration (tạo bảng) & Tạo tài khoản Admin mẫu
 DB chạy thật:
 ```powershell
 docker compose exec api flask --app "app:create_app()" db upgrade
+docker compose exec api python seed_admin.py
 ```
+Tài khoản Admin mẫu được tạo sẵn:
+- **Super Admin:** `admin@hkdn.edu.vn` / `admin123` (`admin_id`: `SADM_001`)
+- **Giảng viên (Admin):** `lecturer@hkdn.edu.vn` / `lecturer123` (`admin_id`: `ADM_001`)
+
 DB test (thay `MATKHAU` bằng mật khẩu trong `.env`):
 ```powershell
+docker compose exec postgres psql -U postgres -c "DROP DATABASE IF EXISTS attendance_test;"
 docker compose exec postgres psql -U postgres -c "CREATE DATABASE attendance_test;"
 docker compose exec -e DATABASE_URL=postgresql://postgres:MATKHAU@postgres:5432/attendance_test api flask --app "app:create_app()" db upgrade
 docker compose exec postgres psql -U postgres -d attendance_test -c "\dt"
 ```
-Kết quả đúng: 6 bảng nghiệp vụ (`admin`, `student`, `subject`, `enrollment`, `checkin_history`, `email_recipient`) và `alembic_version`.
+Kết quả đúng: 6 bảng nghiệp vụ (`admin`, `students`, `subjects`, `enrollments`, `checkin_history`, `email_recipients`) và `alembic_version`.
 
 ## 5. Chạy test
 ```powershell
@@ -45,10 +51,9 @@ cd server
 python -m pip install -r requirements-dev.txt
 python -m pytest              # tất cả
 python -m pytest -m db        # schema DB
-python -m pytest -m api       # API (cần route đã được viết)
+python -m pytest -m api       # API
 ```
 - Test API tự skip nếu server không phản hồi; test DB tự skip nếu thiếu `TEST_DATABASE_URL`.
-- **xfailed** là chỗ DB/API hiện tại khác tài liệu đã được ghi nhận, không phải lỗi của người chạy test. Nếu một test xfail được sửa đúng, pytest báo **XPASS**.
 - Test import CSV ghi sinh viên mẫu `TEST0001`, `TEST0002` vào DB chạy thật; xóa thủ công nếu cần.
 
 ## 6. Dừng / dọn dẹp
