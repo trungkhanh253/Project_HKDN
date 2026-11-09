@@ -325,12 +325,18 @@ def sync_push():
 
 @api_bp.route("/sync/pull", methods=["GET", "POST"])
 def sync_pull():
+    is_android_since_seq = "since_seq" in request.args
     if request.method == "POST":
         body = request.get_json(silent=True) or {}
-        raw_after_seq = body.get("after_seq", request.args.get("after_seq", 0))
+        if "since_seq" in body:
+            is_android_since_seq = True
+        raw_after_seq = body.get(
+            "after_seq",
+            body.get("since_seq", request.args.get("after_seq", request.args.get("since_seq", 0))),
+        )
         raw_limit = body.get("limit", request.args.get("limit", 100))
     else:
-        raw_after_seq = request.args.get("after_seq", 0)
+        raw_after_seq = request.args.get("after_seq", request.args.get("since_seq", 0))
         raw_limit = request.args.get("limit", 100)
 
     try:
@@ -339,7 +345,7 @@ def sync_pull():
     except (TypeError, ValueError):
         return error_response(
             "INVALID_PARAMS",
-            "Tham số 'after_seq' và 'limit' phải là số nguyên.",
+            "Tham số 'after_seq' (hoặc 'since_seq') và 'limit' phải là số nguyên.",
             400,
         )
 
@@ -350,7 +356,25 @@ def sync_pull():
             400,
         )
 
-    result = SyncRepository.pull_all_changes(after_seq=after_seq, limit=limit)
+    flat_mode = is_android_since_seq or request.args.get("format") == "flat"
+    result = SyncRepository.pull_all_changes(
+        after_seq=after_seq,
+        limit=limit,
+        flat_changes=flat_mode,
+    )
     return jsonify(result), 200
+
+
+@api_bp.route("/sync/status", methods=["GET"])
+def sync_status():
+    return (
+        jsonify(
+            {
+                "status": "ok",
+                "latest_seq": SyncRepository.get_latest_seq(),
+            }
+        ),
+        200,
+    )
 
 
