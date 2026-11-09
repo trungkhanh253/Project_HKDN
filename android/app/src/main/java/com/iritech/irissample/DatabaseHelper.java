@@ -11,7 +11,34 @@ import java.security.NoSuchAlgorithmException;
 public class DatabaseHelper extends SQLiteOpenHelper {
 
     private static final String DATABASE_NAME = "attendance.db";
-    private static final int DATABASE_VERSION = 20; // Version 20: Thêm semester_start_date/semester_end_date cho subjects
+    private static final int DATABASE_VERSION = 21; // Version 21: Thêm cột/bảng/trigger phục vụ đồng bộ (uuid, updated_at, sync_outbox, sync_state, sync_meta)
+
+
+    // ===================== ĐỒNG BỘ (v21) =====================
+    // Theo quy ước sqlite_trigger_contract.md giữa Android Database và Android Sync.
+    private static final String TABLE_SYNC_OUTBOX = "sync_outbox"; // hàng đợi thay đổi chờ gửi lên server
+    private static final String TABLE_SYNC_STATE = "sync_state";   // cờ chặn trigger (is_suppressed)
+    private static final String TABLE_SYNC_META = "sync_meta";     // last_seq, device_id
+
+    /** 6 bảng dữ liệu được đồng bộ với server. */
+    // Viết thẳng tên bảng (không dùng TABLE_*) vì các hằng TABLE_* được khai báo phía dưới (tránh lỗi illegal forward reference).
+    private static final String[] SYNC_TABLES = {
+            "admin", "subjects", "students",
+            "enrollments", "checkin_history", "email_recipients"
+    };
+
+    /** Biểu thức SQLite sinh UUID v4 ngẫu nhiên. */
+    private static final String UUID_SQL =
+            "lower(hex(randomblob(4)))||'-'||lower(hex(randomblob(2)))||'-4'||" +
+                    "substr(lower(hex(randomblob(2))),2)||'-'||substr('89ab',abs(random())%4+1,1)||" +
+                    "substr(lower(hex(randomblob(2))),2)||'-'||lower(hex(randomblob(6)))";
+
+    /** Thời điểm hiện tại, tính bằng mili giây. */
+    private static final String NOW_SQL = "(strftime('%s','now')*1000)";
+
+    /** Điều kiện bật trigger: chỉ chạy khi cờ chặn đang tắt (tức không phải đang ghi dữ liệu kéo từ server về). */
+    private static final String SYNC_ON =
+            "(SELECT is_suppressed FROM sync_state WHERE id=1)=0";
 
     // Bảng ADMIN
     public static final String TABLE_ADMIN = "admin";
@@ -78,7 +105,7 @@ public class DatabaseHelper extends SQLiteOpenHelper {
 
     @Override
     public void onCreate(SQLiteDatabase db) {
-        // TẠO BẢNG ADMIN - Có phân quyền và thông tin đầy đủ
+        // Tạo bảng ADMIN
         String CREATE_ADMIN_TABLE = "CREATE TABLE " + TABLE_ADMIN + " (" +
                 COL_ADMIN_ID + " TEXT PRIMARY KEY, " +
                 COL_ADMIN_EMAIL + " TEXT UNIQUE NOT NULL, " +
@@ -96,7 +123,7 @@ public class DatabaseHelper extends SQLiteOpenHelper {
                 COL_ADMIN_IS_FIRST_LOGIN + " INTEGER DEFAULT 1, " + // 1 = first login, 0 = đã cập nhật
                 COL_ADMIN_HAS_IRIS + " INTEGER DEFAULT 0)"; // 0 = chưa ghi danh, 1 = đã ghi danh
 
-        // TẠO BẢNG SUBJECTS - Có instructor_id, subject_status, created_at, semester_start/end
+        // TẠO BẢNG SUBJECTS
         String CREATE_SUBJECTS_TABLE = "CREATE TABLE " + TABLE_SUBJECTS + " (" +
                 COL_SUBJECT_ID + " TEXT PRIMARY KEY, " +
                 COL_SUBJECT_NAME + " TEXT NOT NULL, " +
@@ -156,6 +183,9 @@ public class DatabaseHelper extends SQLiteOpenHelper {
         db.execSQL(CREATE_ENROLLMENTS_TABLE);
         db.execSQL(CREATE_CHECKIN_HISTORY_TABLE);
         db.execSQL(CREATE_EMAIL_RECIPIENTS_TABLE);
+
+        // v21: thêm cột uuid/updated_at, bảng sync_*, trigger
+        applySyncSchema(db);
     }
 
     @Override
@@ -163,18 +193,165 @@ public class DatabaseHelper extends SQLiteOpenHelper {
         super.onOpen(db);
         if (!db.isReadOnly()) {
             db.execSQL("PRAGMA foreign_keys = ON;");
+            // Phòng khi app crash giữa lúc đang sync: luôn tắt cờ chặn trigger khi mở DB
+            db.execSQL("UPDATE sync_state SET is_suppressed = 0 WHERE id = 1");
         }
     }
 
     @Override
     public void onUpgrade(SQLiteDatabase db, int oldVersion, int newVersion) {
-        db.execSQL("DROP TABLE IF EXISTS " + TABLE_EMAIL_RECIPIENTS);
-        db.execSQL("DROP TABLE IF EXISTS " + TABLE_CHECKIN_HISTORY);
-        db.execSQL("DROP TABLE IF EXISTS " + TABLE_ENROLLMENTS);
-        db.execSQL("DROP TABLE IF EXISTS " + TABLE_STUDENTS);
-        db.execSQL("DROP TABLE IF EXISTS " + TABLE_SUBJECTS);
-        db.execSQL("DROP TABLE IF EXISTS " + TABLE_ADMIN);
-        onCreate(db);
+        if (oldVersion < 20) {
+            // Schema quá cũ: giữ hành vi cũ (xóa và tạo lại)
+            db.execSQL("DROP TABLE IF EXISTS " + TABLE_EMAIL_RECIPIENTS);
+            db.execSQL("DROP TABLE IF EXISTS " + TABLE_CHECKIN_HISTORY);
+            db.execSQL("DROP TABLE IF EXISTS " + TABLE_ENROLLMENTS);
+            db.execSQL("DROP TABLE IF EXISTS " + TABLE_STUDENTS);
+            db.execSQL("DROP TABLE IF EXISTS " + TABLE_SUBJECTS);
+            db.execSQL("DROP TABLE IF EXISTS " + TABLE_ADMIN);
+            onCreate(db);
+            return;
+        }
+        // v20 -> v21: chỉ THÊM cột/bảng/trigger, KHÔNG xóa dữ liệu
+        if (oldVersion < 21) {
+            applySyncSchema(db);
+        }
+    }
+
+    // ===================== ĐỒNG BỘ (v21) =====================
+
+    /** Kiểm tra bảng đã có cột chưa (để migration chạy lại không bị lỗi). */
+    private boolean hasColumn(SQLiteDatabase db, String table, String column) {
+        Cursor c = db.rawQuery("PRAGMA table_info(" + table + ")", null);
+        try {
+            while (c.moveToNext()) {
+                if (column.equalsIgnoreCase(c.getString(c.getColumnIndex("name")))) return true;
+            }
+            return false;
+        } finally {
+            c.close();
+        }
+    }
+
+    /**
+     * Phục vụ đồng bộ. Dùng chung cho cài mới (onCreate)
+     * và nâng cấp từ v20 (onUpgrade). Chỉ thêm, không xóa dữ liệu cũ.
+     */
+    private void applySyncSchema(SQLiteDatabase db) {
+        // Cờ chặn trigger (tránh vòng lặp khi ghi dữ liệu kéo từ server về)
+        db.execSQL("CREATE TABLE IF NOT EXISTS " + TABLE_SYNC_STATE + "(" +
+                "id INTEGER PRIMARY KEY, is_suppressed INTEGER NOT NULL DEFAULT 0)");
+        db.execSQL("INSERT OR IGNORE INTO " + TABLE_SYNC_STATE + "(id,is_suppressed) VALUES (1,0)");
+
+        // Thông tin đồng bộ khác: last_seq (đã lấy dữ liệu từ server đến đâu), device_id
+        db.execSQL("CREATE TABLE IF NOT EXISTS " + TABLE_SYNC_META + "(meta_key TEXT PRIMARY KEY, meta_value TEXT)");
+        db.execSQL("INSERT OR IGNORE INTO " + TABLE_SYNC_META + "(meta_key,meta_value) VALUES " +
+                "('last_seq','0'),('device_id',lower(hex(randomblob(16))))");
+
+        // Hàng đợi thay đổi chờ gửi lên server
+        db.execSQL("CREATE TABLE IF NOT EXISTS " + TABLE_SYNC_OUTBOX + "(" +
+                "change_id INTEGER PRIMARY KEY AUTOINCREMENT, " +
+                "uuid TEXT NOT NULL, " +
+                "table_name TEXT NOT NULL, " +
+                "operation TEXT NOT NULL, " +
+                "payload TEXT, " +
+                "updated_at INTEGER NOT NULL, " +
+                "status TEXT NOT NULL DEFAULT 'PENDING', " +
+                "retry_count INTEGER NOT NULL DEFAULT 0, " +
+                "last_error TEXT)");
+        db.execSQL("CREATE INDEX IF NOT EXISTS idx_outbox_pending ON " + TABLE_SYNC_OUTBOX +
+                " (status, change_id ASC)");
+
+        for (String t : SYNC_TABLES) {
+            if (!hasColumn(db, t, "uuid")) {
+                db.execSQL("ALTER TABLE " + t + " ADD COLUMN uuid TEXT");
+            }
+            if (!hasColumn(db, t, "updated_at")) {
+                db.execSQL("ALTER TABLE " + t + " ADD COLUMN updated_at INTEGER NOT NULL DEFAULT 0");
+            }
+
+            // Điền uuid cho dữ liệu cũ TRƯỚC khi tạo trigger (để không sinh outbox)
+            db.execSQL("UPDATE " + t + " SET uuid=" + UUID_SQL + ", updated_at=" + NOW_SQL +
+                    " WHERE uuid IS NULL");
+            db.execSQL("CREATE UNIQUE INDEX IF NOT EXISTS idx_" + t + "_uuid ON " + t + "(uuid)");
+
+            // INSERT: code cũ của app không truyền uuid, nên trigger tự gán uuid rồi mới ghi outbox
+            db.execSQL("CREATE TRIGGER IF NOT EXISTS trg_" + t + "_insert AFTER INSERT ON " + t +
+                    " WHEN " + SYNC_ON + " BEGIN " +
+                    "UPDATE " + t + " SET uuid=COALESCE(uuid," + UUID_SQL + "), updated_at=" + NOW_SQL +
+                    " WHERE rowid=NEW.rowid; " +
+                    "INSERT INTO " + TABLE_SYNC_OUTBOX + "(uuid,table_name,operation,updated_at) " +
+                    "SELECT uuid,'" + t + "','INSERT'," + NOW_SQL + " FROM " + t + " WHERE rowid=NEW.rowid; END");
+
+            // UPDATE: cập nhật updated_at của dòng và ghi outbox (điều kiện chống lặp vô hạn)
+            db.execSQL("CREATE TRIGGER IF NOT EXISTS trg_" + t + "_update AFTER UPDATE ON " + t +
+                    " WHEN " + SYNC_ON + " AND NEW.updated_at IS OLD.updated_at AND NEW.uuid IS OLD.uuid BEGIN " +
+                    "UPDATE " + t + " SET updated_at=" + NOW_SQL + " WHERE rowid=NEW.rowid; " +
+                    "INSERT INTO " + TABLE_SYNC_OUTBOX + "(uuid,table_name,operation,updated_at) " +
+                    "VALUES(NEW.uuid,'" + t + "','UPDATE'," + NOW_SQL + "); END");
+
+            // DELETE: ghi lại OLD.uuid để server biết dòng nào đã xóa
+            db.execSQL("CREATE TRIGGER IF NOT EXISTS trg_" + t + "_delete AFTER DELETE ON " + t +
+                    " WHEN " + SYNC_ON + " BEGIN " +
+                    "INSERT INTO " + TABLE_SYNC_OUTBOX + "(uuid,table_name,operation,updated_at) " +
+                    "VALUES(OLD.uuid,'" + t + "','DELETE'," + NOW_SQL + "); END");
+        }
+    }
+
+    /**
+     * Bọc quanh mọi thao tác ghi dữ liệu kéo TỪ SERVER về.
+     * Cờ chặn được bật bên trong transaction nên nếu app crash giữa chừng thì tự rollback.
+     */
+    public void applyRemote(Runnable work) {
+        SQLiteDatabase db = getWritableDatabase();
+        db.beginTransaction();
+        try {
+            db.execSQL("UPDATE " + TABLE_SYNC_STATE + " SET is_suppressed = 1 WHERE id = 1");
+            work.run();
+            db.setTransactionSuccessful();
+        } finally {
+            db.execSQL("UPDATE " + TABLE_SYNC_STATE + " SET is_suppressed = 0 WHERE id = 1");
+            db.endTransaction();
+        }
+    }
+
+    /**
+     * Đưa toàn bộ dữ liệu hiện có vào outbox (trạng thái PENDING).
+     * Gọi khi chuyển Standalone -> Server lần đầu, hoặc sau khi restore backup.
+     */
+    public void enqueueAllForSync() {
+        SQLiteDatabase db = getWritableDatabase();
+        for (String t : SYNC_TABLES) {
+            db.execSQL("INSERT INTO " + TABLE_SYNC_OUTBOX + "(uuid,table_name,operation,updated_at) " +
+                    "SELECT uuid,'" + t + "','INSERT'," + NOW_SQL + " FROM " + t +
+                    " WHERE uuid NOT IN (SELECT uuid FROM " + TABLE_SYNC_OUTBOX +
+                    " WHERE table_name='" + t + "' AND status='PENDING')");
+        }
+    }
+
+    /** Đọc last_seq (đã lấy dữ liệu từ server đến đâu). */
+    public long getLastSeq() {
+        SQLiteDatabase db = getReadableDatabase();
+        Cursor c = db.rawQuery("SELECT meta_value FROM " + TABLE_SYNC_META + " WHERE meta_key='last_seq'", null);
+        try {
+            return c.moveToFirst() ? Long.parseLong(c.getString(0)) : 0L;
+        } finally {
+            c.close();
+        }
+    }
+
+    /** Ghi last_seq sau khi kéo dữ liệu thành công. */
+    public void setLastSeq(long seq) {
+        getWritableDatabase().execSQL("INSERT OR REPLACE INTO " + TABLE_SYNC_META +
+                "(meta_key,meta_value) VALUES('last_seq', ?)", new Object[]{String.valueOf(seq)});
+    }
+
+    /**
+     * Gọi sau khi restore backup: đặt lại con trỏ kéo về 0 và đưa toàn bộ dữ liệu
+     * vào outbox để đẩy lại lên server (gửi lặp vẫn an toàn vì server nhận theo uuid).
+     */
+    public void resetSyncAfterRestore() {
+        setLastSeq(0);
+        enqueueAllForSync();
     }
 
     private String hashPassword(String password) {
