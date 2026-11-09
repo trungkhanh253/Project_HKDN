@@ -49,6 +49,7 @@ python -m pytest -m api       # API (cần route đã được viết)
 ```
 - Test API tự skip nếu server không phản hồi; test DB tự skip nếu thiếu `TEST_DATABASE_URL`.
 - **xfailed** là chỗ DB/API hiện tại khác tài liệu đã được ghi nhận, không phải lỗi của người chạy test. Nếu một test xfail được sửa đúng, pytest báo **XPASS**.
+- Test đồng bộ (`test_sync.py`) và các test cần đăng nhập đòi tài khoản admin: đặt `TEST_ADMIN_EMAIL`, `TEST_ADMIN_PASSWORD` trong `.env` (xin Người 2 cách tạo tài khoản này). Thiếu hai biến, các test đó tự skip. `TEST_API_PREFIX` (mặc định `/api/v1`) và `TEST_PULL_PARAM` (mặc định `since`) đổi được nếu API đổi.
 - Test import CSV ghi sinh viên mẫu `TEST0001`, `TEST0002` vào DB chạy thật; xóa thủ công nếu cần.
 
 ## 6. Dừng / dọn dẹp
