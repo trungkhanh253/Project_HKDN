@@ -49,3 +49,28 @@ def db():
     finally:
         conn.rollback()
         conn.close()
+
+
+def _login_headers(api, v1):
+    email = os.getenv("TEST_ADMIN_EMAIL")
+    pw = os.getenv("TEST_ADMIN_PASSWORD")
+    if not email or not pw:
+        return None
+    r = api.post(f"{v1}/auth/login", json={"email": email, "password": pw}, timeout=10)
+    assert r.status_code == 200, f"Đăng nhập thất bại: HTTP {r.status_code}"
+    return {"Authorization": f"Bearer {r.json()['access_token']}"}
+
+
+@pytest.fixture(scope="session")
+def auth(api, v1):
+    """Header JWT; skip nếu chưa cấu hình tài khoản admin để test."""
+    h = _login_headers(api, v1)
+    if h is None:
+        pytest.skip("Chưa đặt TEST_ADMIN_EMAIL / TEST_ADMIN_PASSWORD")
+    return h
+
+
+@pytest.fixture(scope="session")
+def maybe_auth(api, v1):
+    """Header JWT nếu có tài khoản test, ngược lại {} (cho API chưa rõ có cần token)."""
+    return _login_headers(api, v1) or {}
