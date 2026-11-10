@@ -24,6 +24,11 @@ import android.widget.TextView;
 import android.widget.Toast;
 import android.database.Cursor;
 import android.database.sqlite.SQLiteDatabase;
+import android.content.Intent;
+import com.iritech.irissample.sync.data.AndroidSyncPrefs;
+import com.iritech.irissample.sync.data.SQLiteSyncRepository;
+import com.iritech.irissample.sync.model.SyncChange;
+import com.iritech.irissample.sync.worker.SyncWorkScheduler;
 
 /*import com.iritech.android.widget.alertdialog.BestImageDialog;
 import com.iritech.android.widget.alertdialog.SettingDialog;
@@ -74,6 +79,7 @@ public class MainActivity extends AppCompatActivity {
 
     private Intent pendingIrisIntent;
     private int pendingRequestCode;
+    private boolean loginServerMode;
 
     String enrollImgPath = (Environment.getExternalStorageDirectory().toString() + File.separator
             + "iritech" + File.separator + "enroll");
@@ -132,8 +138,38 @@ public class MainActivity extends AppCompatActivity {
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
+
+        SQLiteSyncRepository syncRepository =
+                new SQLiteSyncRepository(this);
+
+        Log.d("SYNC_TEST",
+                "Pending: " + syncRepository.getPendingCount());
+
+        Log.d("SYNC_TEST",
+                "Failed: " + syncRepository.getFailedCount());
+
+        Log.d("SYNC_TEST",
+                "Last Seq: " + syncRepository.getLastSeq());
         super.onCreate(savedInstanceState);
         setContentView(R.layout.activity_main);
+        // ===== TEST SQLITE SYNC =====
+        SQLiteSyncRepository repo =
+                new SQLiteSyncRepository(this);
+
+        List<SyncChange> changes = repo.getPendingChanges(10);
+
+        Log.d("SYNC_TEST", "Pending count: " + repo.getPendingCount());
+        Log.d("SYNC_TEST", "Loaded changes: " + changes.size());
+
+        for (SyncChange change : changes) {
+            Log.d("SYNC_TEST",
+                    "Change ID: " + change.getChangeId()
+                            + ", Table: " + change.getTableName()
+                            + ", Operation: " + change.getOperation()
+                            + ", Has payload: " + (change.getPayload() != null));
+        }
+        // =====
+
 
         //CaptureActivity.setUSBActivity(this);
         dbHelper = new DatabaseHelper(this);
@@ -142,7 +178,12 @@ public class MainActivity extends AppCompatActivity {
         currentUserRole  = getIntent().getStringExtra("USER_ROLE");
         currentUserName  = getIntent().getStringExtra("USER_NAME");
 
-        checkFirstLoginAndShowDialog();
+        AndroidSyncPrefs syncPrefs = new AndroidSyncPrefs(this);
+        loginServerMode = syncPrefs.isServerMode();
+
+        if (!syncPrefs.isServerMode()) {
+            checkFirstLoginAndShowDialog();
+        }
 
         try {
             PackageInfo pInfo = this.getPackageManager().getPackageInfo(this.getPackageName(), 0);
@@ -306,6 +347,24 @@ public class MainActivity extends AppCompatActivity {
     @Override
     protected void onResume() {
         super.onResume();
+        AndroidSyncPrefs prefs = new AndroidSyncPrefs(this);
+
+        if (loginServerMode != prefs.isServerMode()) {
+
+            Intent intent = new Intent(
+                    MainActivity.this,
+                    LoginActivity.class
+            );
+
+            intent.addFlags(
+                    Intent.FLAG_ACTIVITY_NEW_TASK |
+                            Intent.FLAG_ACTIVITY_CLEAR_TASK
+            );
+
+            startActivity(intent);
+            finish();
+            return;
+        }
         /*if (mResultCode == GemResult.IDDK_UVC_DEVICE_ACCESS_DENIED) {
             startCaptureActivity(mAction, mRequestCode);
         }*/
@@ -630,19 +689,59 @@ public class MainActivity extends AppCompatActivity {
             intent.putExtra("USER_EMAIL", currentUserEmail);
             startActivity(intent);
             return true;
+        } else if (id == R.id.action_server_settings) {
+            // Mở màn hình cấu hình máy chủ của Người 2
+            Intent intent = new Intent(
+                    MainActivity.this,
+                    ServerSettingsActivity.class
+            );
+            startActivity(intent);
+            return true;
         } else if (id == R.id.action_settings) {
 //            SettingDialog dialog = new SettingDialog(this);
  //           dialog.show();
             return true;
+
         } else if (id == R.id.action_logout) {
-            Toast.makeText(this, "Đã đăng xuất", Toast.LENGTH_SHORT).show();
-            SharedPreferences preferences = getSharedPreferences("user_prefs", MODE_PRIVATE);
-            preferences.edit().clear().apply();
-            Intent intent = new Intent(this, LoginActivity.class);
-            intent.setFlags(Intent.FLAG_ACTIVITY_NEW_TASK | Intent.FLAG_ACTIVITY_CLEAR_TASK);
-            startActivity(intent);
+
+            AndroidSyncPrefs prefs = new AndroidSyncPrefs(this);
+
+            if (prefs.isServerMode()) {
+
+                // Server Mode: xóa JWT và phiên đăng nhập
+                logoutServerMode();
+
+            } else {
+
+                // Standalone Mode: giữ nguyên cách đăng xuất SQLite
+                SharedPreferences preferences =
+                        getSharedPreferences("user_prefs", MODE_PRIVATE);
+
+                preferences.edit().clear().apply();
+
+                Intent intent = new Intent(
+                        this,
+                        LoginActivity.class
+                );
+
+                intent.setFlags(
+                        Intent.FLAG_ACTIVITY_NEW_TASK |
+                                Intent.FLAG_ACTIVITY_CLEAR_TASK
+                );
+
+                startActivity(intent);
+                finish();
+            }
+
+            Toast.makeText(
+                    this,
+                    "Đã đăng xuất",
+                    Toast.LENGTH_SHORT
+            ).show();
+
             return true;
         }
+
         return super.onOptionsItemSelected(item);
     }
 
@@ -746,4 +845,36 @@ public class MainActivity extends AppCompatActivity {
         dbHelper.close();
         super.onDestroy();
     }
+
+
+    private void logoutServerMode() {
+
+        AndroidSyncPrefs prefs =
+                new AndroidSyncPrefs(this);
+
+        prefs.setAutoSyncEnabled(false);
+
+        SyncWorkScheduler.cancelAllSync(
+                getApplicationContext()
+        );
+
+        // Xóa access token và refresh token
+        prefs.clearAuthSession();
+
+        // Quay về màn hình Login
+        Intent intent = new Intent(
+                this,
+                LoginActivity.class
+        );
+
+        // Xóa các Activity cũ khỏi back stack
+        intent.addFlags(
+                Intent.FLAG_ACTIVITY_NEW_TASK |
+                        Intent.FLAG_ACTIVITY_CLEAR_TASK
+        );
+
+        startActivity(intent);
+        finish();
+    }
+
 }

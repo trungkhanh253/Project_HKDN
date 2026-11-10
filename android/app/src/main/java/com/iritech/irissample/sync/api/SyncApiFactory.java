@@ -1,8 +1,14 @@
+
 package com.iritech.irissample.sync.api;
 
+import android.content.Context;
+
+import com.iritech.irissample.auth.TokenAuthenticator;
 import com.iritech.irissample.sync.data.ISyncPrefs;
+
 import java.io.IOException;
 import java.util.concurrent.TimeUnit;
+
 import okhttp3.ConnectionPool;
 import okhttp3.HttpUrl;
 import okhttp3.Interceptor;
@@ -10,77 +16,149 @@ import okhttp3.OkHttpClient;
 import okhttp3.Request;
 import okhttp3.Response;
 import okhttp3.logging.HttpLoggingInterceptor;
+
 import retrofit2.Retrofit;
 import retrofit2.converter.gson.GsonConverterFactory;
 
-/**
- * Factory khởi tạo Retrofit API Service với Dynamic Base URL và Token từ ISyncPrefs
- * Có cơ chế Cache Retrofit & OkHttpClient để tái sử dụng connection pool, tránh rò rỉ socket và tài nguyên.
- */
 public class SyncApiFactory {
 
     private static SyncApiService cachedService;
     private static String cachedBaseUrl;
     private static String cachedToken;
     private static OkHttpClient cachedClient;
-    private static final ConnectionPool SHARED_CONNECTION_POOL = new ConnectionPool(5, 5, TimeUnit.MINUTES);
 
-    public static String normalizeAndValidateBaseUrl(String rawUrl) throws IllegalArgumentException {
+    // NEW: Context để khởi tạo TokenAuthenticator
+    private static Context appContext;
+
+    private static final ConnectionPool SHARED_CONNECTION_POOL =
+            new ConnectionPool(5, 5, TimeUnit.MINUTES);
+
+    public static String normalizeAndValidateBaseUrl(String rawUrl)
+            throws IllegalArgumentException {
+
         if (rawUrl == null || rawUrl.trim().isEmpty()) {
             return "http://127.0.0.1:5000/";
         }
+
         String url = rawUrl.trim();
-        if (!url.startsWith("http://") && !url.startsWith("https://")) {
+
+        if (!url.startsWith("http://")
+                && !url.startsWith("https://")) {
             url = "http://" + url;
         }
+
         if (!url.endsWith("/")) {
             url += "/";
         }
 
         HttpUrl parsed = HttpUrl.parse(url);
+
         if (parsed == null) {
-            throw new IllegalArgumentException("Địa chỉ máy chủ không hợp lệ: " + rawUrl);
+            throw new IllegalArgumentException(
+                    "Địa chỉ máy chủ không hợp lệ: " + rawUrl
+            );
         }
+
         return url;
     }
 
-    public static synchronized SyncApiService createService(final ISyncPrefs prefs) {
-        String baseUrl = normalizeAndValidateBaseUrl(prefs.getServerUrl());
-        String token = prefs.getAuthToken() != null ? prefs.getAuthToken().trim() : "";
+    public static synchronized SyncApiService createService(
+            final ISyncPrefs prefs
+    ) {
 
-        // Tái sử dụng instance nếu URL và Token chưa thay đổi
-        if (cachedService != null && baseUrl.equals(cachedBaseUrl) && token.equals(cachedToken)) {
+        String baseUrl =
+                normalizeAndValidateBaseUrl(prefs.getServerUrl());
+
+        String token = prefs.getAuthToken() != null
+                ? prefs.getAuthToken().trim()
+                : "";
+
+        // Giữ nguyên cơ chế cache theo URL và Token
+        if (cachedService != null
+                && baseUrl.equals(cachedBaseUrl)
+                && token.equals(cachedToken)) {
             return cachedService;
         }
 
-        // Tái sử dụng OkHttpClient và ConnectionPool, chỉ dựng mới Retrofit khi cần
-        if (cachedClient == null) {
-            HttpLoggingInterceptor logging = new HttpLoggingInterceptor();
-            logging.setLevel(HttpLoggingInterceptor.Level.BODY);
-            logging.redactHeader("Authorization"); // Bảo mật: Không in Bearer Token ra Logcat
+        // FIX: Tạo lại client nếu URL thay đổi
+        if (cachedClient == null
+                || !baseUrl.equals(cachedBaseUrl)) {
 
-            cachedClient = new OkHttpClient.Builder()
-                    .connectionPool(SHARED_CONNECTION_POOL)
-                    .connectTimeout(15, TimeUnit.SECONDS)
-                    .readTimeout(30, TimeUnit.SECONDS)
-                    .writeTimeout(30, TimeUnit.SECONDS)
-                    .addInterceptor(new Interceptor() {
-                        @Override
-                        public Response intercept(Chain chain) throws IOException {
-                            Request original = chain.request();
-                            Request.Builder builder = original.newBuilder();
+            HttpLoggingInterceptor logging =
+                    new HttpLoggingInterceptor();
 
-                            // Đọc token động từ prefs tại thời điểm gửi request
-                            String currentToken = prefs.getAuthToken();
-                            if (currentToken != null && !currentToken.trim().isEmpty()) {
-                                builder.header("Authorization", "Bearer " + currentToken.trim());
-                            }
-                            builder.header("Accept", "application/json");
-                            builder.header("Content-Type", "application/json");
+            // FIX: Tránh ghi nội dung đồng bộ nhạy cảm
+            logging.setLevel(
+                    HttpLoggingInterceptor.Level.NONE
+            );
 
-                            return chain.proceed(builder.build());
-                        }
-                    })
+            logging.redactHeader("Authorization");
+
+            OkHttpClient.Builder clientBuilder =
+                    new OkHttpClient.Builder()
+                            .connectionPool(
+                                    SHARED_CONNECTION_POOL
+                            )
+                            .connectTimeout(
+                                    15, TimeUnit.SECONDS
+                            )
+                            .readTimeout(
+                                    30, TimeUnit.SECONDS
+                            )
+                            .writeTimeout(
+                                    30, TimeUnit.SECONDS
+                            )
+                            .addInterceptor(new Interceptor() {
+                                @Override
+                                public Response intercept(Chain chain)
+                                        throws IOException {
+
+                                    Request original =
+                                            chain.request();
+
+                                    Request.Builder builder =
+                                            original.newBuilder();
+
+                                    // Giữ nguyên: đọc JWT động từ prefs
+                                    String currentToken =
+                                            prefs.getAuthToken();
+
+                                    if (currentToken != null
+                                            && !currentToken.trim().isEmpty()) {
+
+                                        builder.header(
+                                                "Authorization",
+                                                "Bearer " + currentToken.trim()
+                                        );
+                                    }
+
+                                    builder.header(
+                                            "Accept",
+                                            "application/json"
+                                    );
+
+                                    builder.header(
+                                            "Content-Type",
+                                            "application/json"
+                                    );
+
+                                    return chain.proceed(
+                                            builder.build()
+                                    );
+                                }
+                            });
+
+            // NEW: Tự động refresh JWT khi HTTP 401
+            if (appContext != null) {
+                clientBuilder.authenticator(
+                        new TokenAuthenticator(
+                                appContext,
+                                baseUrl
+                        )
+                );
+            }
+
+            cachedClient = clientBuilder
                     .addInterceptor(logging)
                     .build();
         }
@@ -88,10 +166,14 @@ public class SyncApiFactory {
         Retrofit retrofit = new Retrofit.Builder()
                 .baseUrl(baseUrl)
                 .client(cachedClient)
-                .addConverterFactory(GsonConverterFactory.create())
+                .addConverterFactory(
+                        GsonConverterFactory.create()
+                )
                 .build();
 
-        cachedService = retrofit.create(SyncApiService.class);
+        cachedService =
+                retrofit.create(SyncApiService.class);
+
         cachedBaseUrl = baseUrl;
         cachedToken = token;
 
@@ -99,9 +181,24 @@ public class SyncApiFactory {
     }
 
     public static synchronized void clearCache() {
+
         cachedService = null;
         cachedBaseUrl = null;
         cachedToken = null;
         cachedClient = null;
+    }
+
+    // NEW: Khởi tạo Context một lần
+    public static synchronized void initialize(Context context) {
+
+        if (context == null) {
+            throw new IllegalArgumentException(
+                    "Context không được null"
+            );
+        }
+
+        appContext = context.getApplicationContext();
+
+        clearCache();
     }
 }

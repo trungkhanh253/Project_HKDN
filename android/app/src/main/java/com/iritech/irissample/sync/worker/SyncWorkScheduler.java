@@ -14,6 +14,7 @@ import com.iritech.irissample.sync.api.RetrofitSyncApi;
 import com.iritech.irissample.sync.api.SyncApi;
 import com.iritech.irissample.sync.data.AndroidSyncPrefs;
 import com.iritech.irissample.sync.data.ISyncPrefs;
+import com.iritech.irissample.sync.data.SQLiteSyncRepository;
 import com.iritech.irissample.sync.data.SyncRepository;
 import com.iritech.irissample.sync.manager.SyncManager;
 import com.iritech.irissample.sync.util.AndroidLogger;
@@ -51,24 +52,37 @@ public class SyncWorkScheduler {
     public static synchronized SyncManager initDefaultSyncManager(Context context) {
         try {
             return SyncManager.getInstance();
+
         } catch (IllegalStateException ignored) {
+
             Context appCtx = context.getApplicationContext();
+
+            // 1. Đọc cấu hình Server Mode, URL và JWT
             ISyncPrefs prefs = new AndroidSyncPrefs(appCtx);
+
+            // 2. Khởi tạo API Flask
             SyncApi api = new RetrofitSyncApi(prefs);
 
+            // 3. Sử dụng SQLiteSyncRepository thật
             SyncRepository repo = sCustomRepository;
+
             if (repo == null) {
-                // Kiểm tra xem SqliteSyncRepository thật đã có chưa.
-                // Tuyệt đối không âm thầm nuốt dữ liệu giả trên RAM (FakeSyncRepository) khi chạy trên máy thật.
-                throw new IllegalStateException(
-                        "Chưa có SqliteSyncRepository thật (Đang chờ Android 1 hoàn thiện DatabaseHelper v21). " +
-                        "Không được phép dùng FakeSyncRepository trong môi trường máy thật!"
-                );
+                repo = new SQLiteSyncRepository(appCtx);
             }
 
-            SyncManager manager = new SyncManager(api, repo, prefs, new AndroidLogger());
+            // 4. Khởi tạo SyncManager
+            SyncManager manager = new SyncManager(
+                    api,
+                    repo,
+                    prefs,
+                    new AndroidLogger()
+            );
+
+            // 5. Lưu instance dùng chung
             SyncManager.initialize(manager);
-            Log.d(TAG, "Đã khởi tạo SyncManager mặc định thành công.");
+
+            Log.d(TAG, "Đã khởi tạo SyncManager với SQLiteSyncRepository thành công.");
+
             return manager;
         }
     }

@@ -17,6 +17,12 @@
         app:showAsAction="never" />
 
     <item
+        android:id="@+id/action_server_settings"
+        android:orderInCategory="90"
+        android:title="Cấu hình máy chủ"
+        app:showAsAction="never" />
+
+    <item
         android:id="@+id/action_settings"
         android:orderInCategory="100"
         android:title="Settings"
