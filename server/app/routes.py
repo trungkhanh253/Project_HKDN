@@ -7,7 +7,7 @@ from flask import Blueprint, jsonify, request
 from sqlalchemy.exc import IntegrityError, DataError
 
 from app import db
-from app.models import Admin
+from app.models import Admin, Subject
 from app.auth import (
     ACCESS_TOKEN_EXPIRES,
     create_jwt_token,
@@ -15,6 +15,8 @@ from app.auth import (
     extract_bearer_token,
     verify_password,
 )
+from app.repositories.student_repository import StudentRepository
+from app.repositories.subject_repository import SubjectRepository
 from app.repositories.sync_repository import SyncRepository
 from app.tasks import process_csv_import
 
@@ -152,6 +154,52 @@ def auth_refresh():
     )
 
 
+@api_bp.route("/auth/me", methods=["GET"])
+def auth_me():
+    token = extract_bearer_token()
+    if not token:
+        return error_response(
+            "MISSING_TOKEN",
+            "Thiếu token xác thực trong header Authorization (Bearer <token>).",
+            401,
+        )
+    try:
+        payload = decode_jwt_token(token)
+    except ValueError as exc:
+        return error_response("INVALID_TOKEN", str(exc), 401)
+
+    admin_id = payload.get("sub")
+    admin = Admin.query.filter_by(admin_id=admin_id, deleted_at=None).first()
+    if not admin:
+        return error_response("ADMIN_NOT_FOUND", "Không tìm thấy tài khoản quản trị viên.", 404)
+
+    return jsonify({"admin": admin.to_dict(include_password=False)}), 200
+
+
+@api_bp.route("/students", methods=["GET"])
+def list_students():
+    limit = request.args.get("limit", 100, type=int)
+    offset = request.args.get("offset", 0, type=int)
+    students = StudentRepository.get_all(limit=max(1, min(limit, 500)), offset=max(0, offset))
+    return jsonify({"count": len(students), "students": [s.to_dict() for s in students]}), 200
+
+
+@api_bp.route("/subjects", methods=["GET"])
+def list_subjects():
+    instructor_id = request.args.get("instructor_id")
+    if instructor_id:
+        subjects = SubjectRepository.get_by_instructor(instructor_id)
+    else:
+        subjects = Subject.query.filter_by(deleted_at=None).all()
+    return jsonify({"count": len(subjects), "subjects": [s.to_dict() for s in subjects]}), 200
+
+
+@api_bp.route("/admins", methods=["GET"])
+def list_admins():
+    admins = Admin.query.filter_by(deleted_at=None).all()
+    return jsonify({"count": len(admins), "admins": [a.to_dict(include_password=False) for a in admins]}), 200
+
+
 @api_bp.route("/import/csv", methods=["POST"])
 def import_csv():
     if "file" not in request.files:
@@ -277,12 +325,18 @@ def sync_push():
 
 @api_bp.route("/sync/pull", methods=["GET", "POST"])
 def sync_pull():
+    is_android_since_seq = "since_seq" in request.args
     if request.method == "POST":
         body = request.get_json(silent=True) or {}
-        raw_after_seq = body.get("after_seq", request.args.get("after_seq", 0))
+        if "since_seq" in body:
+            is_android_since_seq = True
+        raw_after_seq = body.get(
+            "after_seq",
+            body.get("since_seq", request.args.get("after_seq", request.args.get("since_seq", 0))),
+        )
         raw_limit = body.get("limit", request.args.get("limit", 100))
     else:
-        raw_after_seq = request.args.get("after_seq", 0)
+        raw_after_seq = request.args.get("after_seq", request.args.get("since_seq", 0))
         raw_limit = request.args.get("limit", 100)
 
     try:
@@ -291,7 +345,7 @@ def sync_pull():
     except (TypeError, ValueError):
         return error_response(
             "INVALID_PARAMS",
-            "Tham số 'after_seq' và 'limit' phải là số nguyên.",
+            "Tham số 'after_seq' (hoặc 'since_seq') và 'limit' phải là số nguyên.",
             400,
         )
 
@@ -302,6 +356,25 @@ def sync_pull():
             400,
         )
 
-    result = SyncRepository.pull_all_changes(after_seq=after_seq, limit=limit)
+    flat_mode = is_android_since_seq or request.args.get("format") == "flat"
+    result = SyncRepository.pull_all_changes(
+        after_seq=after_seq,
+        limit=limit,
+        flat_changes=flat_mode,
+    )
     return jsonify(result), 200
+
+
+@api_bp.route("/sync/status", methods=["GET"])
+def sync_status():
+    return (
+        jsonify(
+            {
+                "status": "ok",
+                "latest_seq": SyncRepository.get_latest_seq(),
+            }
+        ),
+        200,
+    )
+
 
