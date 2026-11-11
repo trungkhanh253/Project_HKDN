@@ -190,79 +190,100 @@ public class SyncManager {
             // -------------------------------------------------------------------------
             // BƯỚC 1: PUSH NHIỀU LÔ (Xử lý sạch outbox, tối đa MAX_PUSH_BATCHES lô)
             // -------------------------------------------------------------------------
-            int pushBatchCount = 0;
-            boolean hasMorePending = true;
+            boolean TEST_PULL_ONLY = false;
 
-            while (hasMorePending && pushBatchCount < MAX_PUSH_BATCHES) {
-                // Kiểm tra lệnh hủy hoặc ngắt luồng từ Worker
-                if (isAborted.get() || Thread.currentThread().isInterrupted()) {
-                    logger.w(TAG, "Chu trình push bị hủy ngang (Worker stopped/aborted).");
-                    SyncResult abortResult = SyncResult.skippedAborted();
-                    notifyStatus(SyncStatus.SKIPPED);
-                    notifyFinished(abortResult);
-                    return abortResult;
-                }
+            if (!TEST_PULL_ONLY) {
+                // Giữ nguyên toàn bộ code Push hiện tại
+                // từ int pushBatchCount = 0;
+                // đến hết phần kiểm tra MAX_PUSH_BATCHES
+                int pushBatchCount = 0;
+                boolean hasMorePending = true;
 
-                List<SyncChange> pendingChanges = repository.getPendingChanges(BATCH_SIZE);
-                if (pendingChanges == null || pendingChanges.isEmpty()) {
-                    hasMorePending = false;
-                    break;
-                }
-
-                pushBatchCount++;
-                lastAttemptedBatchIds.clear();
-                for (SyncChange c : pendingChanges) {
-                    if (c.getChangeId() != null) {
-                        lastAttemptedBatchIds.add(c.getChangeId());
+                while (hasMorePending && pushBatchCount < MAX_PUSH_BATCHES) {
+                    // Kiểm tra lệnh hủy hoặc ngắt luồng từ Worker
+                    if (isAborted.get() || Thread.currentThread().isInterrupted()) {
+                        logger.w(TAG, "Chu trình push bị hủy ngang (Worker stopped/aborted).");
+                        SyncResult abortResult = SyncResult.skippedAborted();
+                        notifyStatus(SyncStatus.SKIPPED);
+                        notifyFinished(abortResult);
+                        return abortResult;
                     }
-                    c.setTableName(TableMapper.toServerTableName(c.getTableName()));
+
+                    List<SyncChange> pendingChanges = new ArrayList<>();
+
+                    List<SyncChange> allPending =
+                            repository.getPendingChanges(BATCH_SIZE);
+
+                    if (allPending != null) {
+                        for (SyncChange change : allPending) {
+                            if ("students".equals(change.getTableName())) {
+                                pendingChanges.add(change);
+                            }
+                        }
+                    }
+                    if (pendingChanges == null || pendingChanges.isEmpty()) {
+                        hasMorePending = false;
+                        break;
+                    }
+
+                    pushBatchCount++;
+                    lastAttemptedBatchIds.clear();
+                    for (SyncChange c : pendingChanges) {
+                        if (c.getChangeId() != null) {
+                            lastAttemptedBatchIds.add(c.getChangeId());
+                        }
+                        c.setTableName(TableMapper.toServerTableName(c.getTableName()));
+                    }
+
+                    logger.d(TAG, "Đang push lô " + pushBatchCount + " (" + pendingChanges.size() + " bản ghi)...");
+
+                    SyncPushRequest pushRequest = new SyncPushRequest(prefs.getDeviceId(), pendingChanges);
+                    SyncPushResponse pushResponse = api.push(pushRequest);
+
+                    if (pushResponse == null) {
+                        throw new SyncApiException(500, "Server trả về Push response rỗng");
+                    }
+
+                    List<String> syncedIds = pushResponse.getSyncedChangeIds();
+                    List<String> failedIds = pushResponse.getFailedChangeIds();
+
+                    int handled = (syncedIds == null ? 0 : syncedIds.size()) + (failedIds == null ? 0 : failedIds.size());
+                    if (handled == 0) {
+                        throw new IllegalStateException(
+                                "Server không xác nhận change_id nào trong batch Push " +
+                                        pushBatchCount
+                        );
+                    }
+
+                    if (syncedIds != null && !syncedIds.isEmpty()) {
+                        repository.markSynced(syncedIds);
+                        totalPushed += syncedIds.size();
+                        logger.d(TAG, "Lô " + pushBatchCount + ": Push thành công " + syncedIds.size() + " bản ghi.");
+                    }
+
+                    if (failedIds != null && !failedIds.isEmpty()) {
+                        String errMsg = pushResponse.getErrorMessage() != null ? pushResponse.getErrorMessage() : "Server rejected item";
+                        repository.markFailed(failedIds, errMsg);
+                        totalFailed += failedIds.size();
+                        logger.w(TAG, "Lô " + pushBatchCount + ": Có " + failedIds.size() + " bản ghi bị từ chối: " + errMsg);
+                    }
+
+                    if (pendingChanges.size() < BATCH_SIZE) {
+                        hasMorePending = false;
+                    }
                 }
 
-                logger.d(TAG, "Đang push lô " + pushBatchCount + " (" + pendingChanges.size() + " bản ghi)...");
-
-                SyncPushRequest pushRequest = new SyncPushRequest(prefs.getDeviceId(), pendingChanges);
-                SyncPushResponse pushResponse = api.push(pushRequest);
-
-                if (pushResponse == null) {
-                    throw new SyncApiException(500, "Server trả về Push response rỗng");
+                if (pushBatchCount >= MAX_PUSH_BATCHES && repository.getPendingCount() > 0) {
+                    logger.w(TAG, "Đã chạm giới hạn tối đa " + MAX_PUSH_BATCHES + " lô push, vẫn còn " + repository.getPendingCount() + " bản ghi trong outbox.");
                 }
 
-                List<String> syncedIds = pushResponse.getSyncedChangeIds();
-                List<String> failedIds = pushResponse.getFailedChangeIds();
-
-                int handled = (syncedIds == null ? 0 : syncedIds.size()) + (failedIds == null ? 0 : failedIds.size());
-                if (handled == 0) {
-                    logger.w(TAG, "Lô " + pushBatchCount + ": Server không xác nhận bản ghi nào trong synced hay failed. Dừng push để bảo vệ.");
-                    break;
-                }
-
-                if (syncedIds != null && !syncedIds.isEmpty()) {
-                    repository.markSynced(syncedIds);
-                    totalPushed += syncedIds.size();
-                    logger.d(TAG, "Lô " + pushBatchCount + ": Push thành công " + syncedIds.size() + " bản ghi.");
-                }
-
-                if (failedIds != null && !failedIds.isEmpty()) {
-                    String errMsg = pushResponse.getErrorMessage() != null ? pushResponse.getErrorMessage() : "Server rejected item";
-                    repository.markFailed(failedIds, errMsg);
-                    totalFailed += failedIds.size();
-                    logger.w(TAG, "Lô " + pushBatchCount + ": Có " + failedIds.size() + " bản ghi bị từ chối: " + errMsg);
-                }
-
-                if (pendingChanges.size() < BATCH_SIZE) {
-                    hasMorePending = false;
-                }
-            }
-
-            if (pushBatchCount >= MAX_PUSH_BATCHES && repository.getPendingCount() > 0) {
-                logger.w(TAG, "Đã chạm giới hạn tối đa " + MAX_PUSH_BATCHES + " lô push, vẫn còn " + repository.getPendingCount() + " bản ghi trong outbox.");
             }
 
             // -------------------------------------------------------------------------
             // BƯỚC 2: PULL VỚI PHÂN TRANG (Kéo dữ liệu mới từ Server về SQLite)
             // -------------------------------------------------------------------------
             boolean hasMore = true;
-            long currentSeq = Math.max(repository.getLastSeq(), prefs.getLastSeq());
+            long currentSeq = repository.getLastSeq();
             int pullPageCount = 0;
 
             while (hasMore && pullPageCount < MAX_PULL_PAGES) {

@@ -26,6 +26,9 @@ android {
         targetSdkVersion 29
         versionCode 2020126
         versionName "2.0.20126"
+
+        multiDexEnabled true
+
         testInstrumentationRunner "androidx.test.runner.AndroidJUnitRunner"
         ndk{
             abiFilters 'armeabi-v7a', 'arm64-v8a'
@@ -115,6 +118,9 @@ dependencies {
     implementation 'org.tensorflow:tensorflow-lite:2.14.0'
     implementation 'org.tensorflow:tensorflow-lite-support:0.4.4'
 
+    // OkHttp - xử lý HTTP request, timeout, interceptor
+    implementation 'com.squareup.okhttp3:okhttp:3.12.13'
+
     // AndroidX WorkManager (ban 2.5.0 tuong thich voi compileSdkVersion 29)
     implementation 'androidx.work:work-runtime:2.5.0'
 
@@ -122,4 +128,6 @@ dependencies {
     implementation 'com.squareup.retrofit2:retrofit:2.9.0'
     implementation 'com.squareup.retrofit2:converter-gson:2.9.0'
     implementation 'com.squareup.okhttp3:logging-interceptor:4.9.3'
+
+    implementation 'androidx.multidex:multidex:2.0.1'
 }

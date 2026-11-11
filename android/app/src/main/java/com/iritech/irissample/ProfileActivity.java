@@ -47,6 +47,10 @@ import java.text.SimpleDateFormat;
 import java.util.Date;
 import java.util.Locale;
 
+import com.iritech.irissample.auth.AuthRepository;
+import com.iritech.irissample.auth.MeResponse;
+import com.iritech.irissample.sync.data.AndroidSyncPrefs;
+
 public class ProfileActivity extends AppCompatActivity {
 
     private DatabaseHelper          dbHelper;
@@ -117,6 +121,13 @@ public class ProfileActivity extends AppCompatActivity {
         setupGenderSpinner();
         loadUserData();
         setViewMode();
+        if (new AndroidSyncPrefs(this).isServerMode()) {
+            buttonEdit.setVisibility(View.GONE);
+            buttonSave.setEnabled(false);
+            buttonCamera.setEnabled(false);
+            buttonGallery.setEnabled(false);
+            buttonEnrollIris.setEnabled(false);
+        }
         setupListeners();
     }
 
@@ -166,6 +177,14 @@ public class ProfileActivity extends AppCompatActivity {
 
     private void loadUserData() {
         Cursor cursor = dbHelper.getAdminByEmail(currentUserEmail);
+
+        AndroidSyncPrefs prefs = new AndroidSyncPrefs(this);
+
+        if (prefs.isServerMode()) {
+            loadServerUserData();
+            return;
+        }
+
         if (cursor != null && cursor.moveToFirst()) {
             editTextEmail.setText(cursor.getString(cursor.getColumnIndexOrThrow("email")));
             editTextFullName.setText(cursor.getString(cursor.getColumnIndexOrThrow("full_name")));
@@ -217,6 +236,82 @@ public class ProfileActivity extends AppCompatActivity {
         }
     }
 
+
+    private void loadServerUserData() {
+
+        AuthRepository repository;
+
+        try {
+            repository = new AuthRepository(this);
+        } catch (Exception e) {
+            showError("Server URL không hợp lệ.");
+            return;
+        }
+
+        repository.getCurrentUser(new AuthRepository.MeCallback() {
+
+            @Override
+            public void onSuccess(MeResponse response) {
+
+                if (response == null || response.admin == null) {
+                    showError("Không tìm thấy thông tin Admin từ Flask.");
+                    return;
+                }
+
+                MeResponse.AdminInfo admin = response.admin;
+
+                editTextEmail.setText(admin.email);
+                editTextFullName.setText(admin.fullName);
+                editTextPhone.setText(admin.phone);
+                editTextDob.setText(admin.dateOfBirth);
+                editTextDescription.setText(admin.description);
+
+                setSpinnerValue(spinnerGender, admin.gender);
+
+                currentUserRole = admin.role;
+
+                textViewRole.setText(
+                        "Vai trò: " +
+                                ("SUPER_ADMIN".equals(admin.role)
+                                        ? "Super Admin"
+                                        : "Admin")
+                );
+
+                if ("SUPER_ADMIN".equals(admin.role)) {
+                    textViewEmployeeCode.setVisibility(View.GONE);
+                } else if (admin.adminCode != null) {
+                    textViewEmployeeCode.setText(
+                            "Mã số giảng viên: " + admin.adminCode
+                    );
+                    textViewEmployeeCode.setVisibility(View.VISIBLE);
+                } else {
+                    textViewEmployeeCode.setVisibility(View.GONE);
+                }
+
+                photoPath = null;
+                loadAvatarImage(admin.fullName);
+
+                textViewIrisStatus.setText(
+                        admin.hasIris == 1
+                                ? "Đã ghi danh mống mắt"
+                                : "Chưa ghi danh"
+                );
+
+                buttonEnrollIris.setText(
+                        admin.hasIris == 1
+                                ? "Ghi danh lại"
+                                : "Ghi danh mống mắt"
+                );
+            }
+
+            @Override
+            public void onError(String message) {
+                showError("Không thể tải hồ sơ từ Flask: " + message);
+            }
+        });
+    }
+
+
     private void loadAvatarImage(String fullName) {
         if (!TextUtils.isEmpty(photoPath) && new File(photoPath).exists()) {
             Bitmap bmp = BitmapFactory.decodeFile(photoPath);
@@ -242,7 +337,21 @@ public class ProfileActivity extends AppCompatActivity {
 
     private void setupListeners() {
 
-        buttonEdit.setOnClickListener(v -> setEditMode());
+        buttonEdit.setOnClickListener(v -> {
+
+            AndroidSyncPrefs prefs = new AndroidSyncPrefs(this);
+
+            if (prefs.isServerMode()) {
+                Toast.makeText(
+                        this,
+                        "Chức năng chỉnh sửa hồ sơ Server đang được phát triển",
+                        Toast.LENGTH_LONG
+                ).show();
+                return;
+            }
+
+            setEditMode();
+        });
 
         buttonCancel.setOnClickListener(v -> {
             loadUserData();

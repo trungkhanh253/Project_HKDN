@@ -11,7 +11,7 @@ import java.security.NoSuchAlgorithmException;
 public class DatabaseHelper extends SQLiteOpenHelper {
 
     private static final String DATABASE_NAME = "attendance.db";
-    private static final int DATABASE_VERSION = 21; // Version 21: Thêm cột/bảng/trigger phục vụ đồng bộ (uuid, updated_at, sync_outbox, sync_state, sync_meta)
+    private static final int DATABASE_VERSION = 22; // Version 21: Thêm cột/bảng/trigger phục vụ đồng bộ (uuid, updated_at, sync_outbox, sync_state, sync_meta)
 
 
     // ===================== ĐỒNG BỘ (v21) =====================
@@ -109,7 +109,7 @@ public class DatabaseHelper extends SQLiteOpenHelper {
         String CREATE_ADMIN_TABLE = "CREATE TABLE " + TABLE_ADMIN + " (" +
                 COL_ADMIN_ID + " TEXT PRIMARY KEY, " +
                 COL_ADMIN_EMAIL + " TEXT UNIQUE NOT NULL, " +
-                COL_ADMIN_PASSWORD + " TEXT NOT NULL, " +
+                COL_ADMIN_PASSWORD + " TEXT, " +
                 COL_ADMIN_FULL_NAME + " TEXT NOT NULL, " +
                 COL_ADMIN_DOB + " TEXT, " +
                 COL_ADMIN_PHONE + " TEXT, " +
@@ -191,10 +191,9 @@ public class DatabaseHelper extends SQLiteOpenHelper {
     @Override
     public void onOpen(SQLiteDatabase db) {
         super.onOpen(db);
+
         if (!db.isReadOnly()) {
-            db.execSQL("PRAGMA foreign_keys = ON;");
-            // Phòng khi app crash giữa lúc đang sync: luôn tắt cờ chặn trigger khi mở DB
-            db.execSQL("UPDATE sync_state SET is_suppressed = 0 WHERE id = 1");
+            db.setForeignKeyConstraintsEnabled(true);
         }
     }
 
@@ -214,6 +213,9 @@ public class DatabaseHelper extends SQLiteOpenHelper {
         // v20 -> v21: chỉ THÊM cột/bảng/trigger, KHÔNG xóa dữ liệu
         if (oldVersion < 21) {
             applySyncSchema(db);
+        }
+        if (oldVersion < 22) {
+            migrateAdminPasswordNullable(db);
         }
     }
 
@@ -301,18 +303,30 @@ public class DatabaseHelper extends SQLiteOpenHelper {
      * Bọc quanh mọi thao tác ghi dữ liệu kéo TỪ SERVER về.
      * Cờ chặn được bật bên trong transaction nên nếu app crash giữa chừng thì tự rollback.
      */
+
     public void applyRemote(Runnable work) {
         SQLiteDatabase db = getWritableDatabase();
+
         db.beginTransaction();
         try {
-            db.execSQL("UPDATE " + TABLE_SYNC_STATE + " SET is_suppressed = 1 WHERE id = 1");
+            db.execSQL(
+                    "UPDATE sync_state " +
+                            "SET is_suppressed = 1 WHERE id = 1"
+            );
+
             work.run();
+
+            db.execSQL(
+                    "UPDATE sync_state " +
+                            "SET is_suppressed = 0 WHERE id = 1"
+            );
+
             db.setTransactionSuccessful();
         } finally {
-            db.execSQL("UPDATE " + TABLE_SYNC_STATE + " SET is_suppressed = 0 WHERE id = 1");
             db.endTransaction();
         }
     }
+
 
     /**
      * Đưa toàn bộ dữ liệu hiện có vào outbox (trạng thái PENDING).
@@ -819,11 +833,9 @@ public class DatabaseHelper extends SQLiteOpenHelper {
         SQLiteDatabase db = this.getWritableDatabase();
         db.beginTransaction();
         try {
-            db.execSQL("PRAGMA foreign_keys = OFF");
             db.delete(TABLE_CHECKIN_HISTORY, COL_STUDENT_ID + " = ?", new String[]{studentId});
             db.delete(TABLE_ENROLLMENTS, COL_STUDENT_ID + " = ?", new String[]{studentId});
             int rows = db.delete(TABLE_STUDENTS, COL_STUDENT_ID + " = ?", new String[]{studentId});
-            db.execSQL("PRAGMA foreign_keys = ON");
             db.setTransactionSuccessful();
             return rows > 0;
         } finally {
@@ -906,4 +918,163 @@ public class DatabaseHelper extends SQLiteOpenHelper {
         cursor.close();
         return count;
     }
+
+
+
+
+    private void migrateAdminPasswordNullable(SQLiteDatabase db) {
+
+        // 1. Kiểm tra password đã cho phép NULL chưa
+        if (!hasColumn(db, "admin", "password")) {
+            throw new IllegalStateException("Missing admin.password");
+        }
+
+        try (Cursor cursor = db.rawQuery("PRAGMA table_info(admin)", null)) {
+            while (cursor.moveToNext()) {
+                String column = cursor.getString(
+                        cursor.getColumnIndexOrThrow("name")
+                );
+
+                if ("password".equalsIgnoreCase(column)) {
+                    int notNull = cursor.getInt(
+                            cursor.getColumnIndexOrThrow("notnull")
+                    );
+
+                    if (notNull == 0) {
+                        return;
+                    }
+                    break;
+                }
+            }
+        }
+
+        // 2. Không được bật foreign_keys trong transaction này.
+        // onConfigure() phải tắt FK trước khi SQLiteOpenHelper
+        // bắt đầu transaction nâng cấp.
+
+        // 3. Xóa các trigger admin cũ
+        db.execSQL("DROP TRIGGER IF EXISTS trg_admin_insert");
+        db.execSQL("DROP TRIGGER IF EXISTS trg_admin_update");
+        db.execSQL("DROP TRIGGER IF EXISTS trg_admin_delete");
+
+        // 4. Tạo bảng admin_v22 với password nullable
+        db.execSQL(
+                "CREATE TABLE admin_v22 (" +
+                        "admin_id TEXT PRIMARY KEY, " +
+                        "email TEXT UNIQUE NOT NULL, " +
+                        "password TEXT, " +
+                        "full_name TEXT NOT NULL, " +
+                        "date_of_birth TEXT, " +
+                        "phone TEXT, " +
+                        "gender TEXT, " +
+                        "photo_path TEXT, " +
+                        "description TEXT, " +
+                        "role TEXT NOT NULL DEFAULT 'ADMIN', " +
+                        "admin_code TEXT, " +
+                        "reset_token TEXT, " +
+                        "expire_at INTEGER, " +
+                        "is_first_login INTEGER DEFAULT 1, " +
+                        "has_iris INTEGER DEFAULT 0, " +
+                        "uuid TEXT, " +
+                        "updated_at INTEGER NOT NULL DEFAULT 0" +
+                        ")"
+        );
+
+        // 5. Sao chép toàn bộ dữ liệu admin cũ
+        db.execSQL(
+                "INSERT INTO admin_v22 (" +
+                        "admin_id,email,password,full_name,date_of_birth," +
+                        "phone,gender,photo_path,description,role,admin_code," +
+                        "reset_token,expire_at,is_first_login,has_iris,uuid,updated_at" +
+                        ") SELECT " +
+                        "admin_id,email,password,full_name,date_of_birth," +
+                        "phone,gender,photo_path,description,role,admin_code," +
+                        "reset_token,expire_at,is_first_login,has_iris,uuid,updated_at " +
+                        "FROM admin"
+        );
+
+        // 6. Xóa bảng cũ, đổi tên bảng mới
+        db.execSQL("DROP TABLE admin");
+        db.execSQL("ALTER TABLE admin_v22 RENAME TO admin");
+
+        // 7. Tạo lại unique index
+        db.execSQL(
+                "CREATE UNIQUE INDEX IF NOT EXISTS idx_admin_uuid ON admin(uuid)"
+        );
+
+        // 8. Tạo lại trigger đồng bộ admin
+        createAdminSyncTriggers(db);
+
+        // 9. Kiểm tra khóa ngoại
+        verifyForeignKeys(db);
+    }
+
+
+
+
+    private void createAdminSyncTriggers(SQLiteDatabase db) {
+
+        String t = "admin";
+
+        db.execSQL(
+                "CREATE TRIGGER IF NOT EXISTS trg_admin_insert " +
+                        "AFTER INSERT ON admin " +
+                        "WHEN " + SYNC_ON + " BEGIN " +
+                        "UPDATE admin SET uuid=COALESCE(uuid," + UUID_SQL + "), " +
+                        "updated_at=" + NOW_SQL + " WHERE rowid=NEW.rowid; " +
+                        "INSERT INTO sync_outbox(uuid,table_name,operation,updated_at) " +
+                        "SELECT uuid,'admin','INSERT'," + NOW_SQL +
+                        " FROM admin WHERE rowid=NEW.rowid; END"
+        );
+
+        db.execSQL(
+                "CREATE TRIGGER IF NOT EXISTS trg_admin_update " +
+                        "AFTER UPDATE ON admin " +
+                        "WHEN " + SYNC_ON +
+                        " AND NEW.updated_at IS OLD.updated_at " +
+                        "AND NEW.uuid IS OLD.uuid " +
+                        "BEGIN " +
+                        "UPDATE admin SET updated_at = " + NOW_SQL +
+                        " WHERE rowid = NEW.rowid; " +
+                        "INSERT INTO sync_outbox " +
+                        "(uuid, table_name, operation, updated_at) " +
+                        "VALUES (NEW.uuid, 'admin', 'UPDATE', " + NOW_SQL + "); " +
+                        "END"
+        );
+
+        db.execSQL(
+                "CREATE TRIGGER IF NOT EXISTS trg_admin_delete " +
+                        "AFTER DELETE ON admin " +
+                        "WHEN " + SYNC_ON + " BEGIN " +
+                        "INSERT INTO sync_outbox(uuid,table_name,operation,updated_at) " +
+                        "VALUES(OLD.uuid,'admin','DELETE'," + NOW_SQL + "); END"
+        );
+    }
+
+    @Override
+    public void onConfigure(SQLiteDatabase db) {
+        super.onConfigure(db);
+
+        // Tắt FK trước transaction nâng cấp v21 -> v22.
+        // Các database đã ở v22 vẫn bật FK bình thường.
+        db.setForeignKeyConstraintsEnabled(db.getVersion() >= 22);
+    }
+
+
+    private void verifyForeignKeys(SQLiteDatabase db) {
+        try (Cursor cursor = db.rawQuery(
+                "PRAGMA foreign_key_check", null)) {
+
+            if (cursor.moveToFirst()) {
+                String table = cursor.getString(0);
+                long rowId = cursor.getLong(1);
+
+                throw new IllegalStateException(
+                        "Foreign key violation: table="
+                                + table + ", rowid=" + rowId
+                );
+            }
+        }
+    }
+
 }

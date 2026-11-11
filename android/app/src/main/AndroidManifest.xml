@@ -3,6 +3,7 @@
     package="com.iritech.irissample"
     android:testOnly="false">
     <application
+        android:name="androidx.multidex.MultiDexApplication"
         android:allowBackup="true"
         android:icon="@drawable/ic_app_logo"
         android:label="@string/app_name"
@@ -10,6 +11,11 @@
         android:theme="@style/AppTheme"
         android:requestLegacyExternalStorage="true"
         android:usesCleartextTraffic="true">
+
+        <activity
+            android:name=".ServerSettingsActivity"
+            android:exported="false"
+            android:label="Cấu hình máy chủ" />
 
         <provider
             android:name="androidx.core.content.FileProvider"

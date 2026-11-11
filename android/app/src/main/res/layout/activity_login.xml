@@ -147,6 +147,15 @@
                         android:layout_marginTop="20dp"
                         android:text="Đăng nhập" />
 
+                    <Button
+                        android:id="@+id/buttonServerSettings"
+                        android:layout_width="match_parent"
+                        android:layout_height="wrap_content"
+                        android:layout_marginTop="10dp"
+                        android:text="Cấu hình máy chủ"
+                        android:textAllCaps="false" />
+
+
                     <LinearLayout
                         android:layout_width="match_parent"
                         android:layout_height="wrap_content"

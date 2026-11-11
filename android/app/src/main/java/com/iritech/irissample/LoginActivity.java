@@ -18,6 +18,11 @@ import android.widget.TextView;
 import android.content.Intent;
 import android.widget.Toast;
 
+import com.iritech.irissample.auth.MeResponse;
+import com.iritech.irissample.sync.data.AndroidSyncPrefs;
+import com.iritech.irissample.auth.AuthRepository;
+import com.iritech.irissample.auth.LoginResponse;
+
 import com.iritech.irissample.R;
 //import com.iritech.iris.CaptureActivity;
 //import com.iritech.iris.Constants;
@@ -31,6 +36,7 @@ public class LoginActivity extends AppCompatActivity {
     private EditText  editTextEmail;
     private EditText  editTextPassword;
     private Button    buttonLogin;
+    private Button buttonServerSettings;
     private Button    buttonLoginWithIris;
     private Button    buttonRegister;
     private TextView  textViewError;
@@ -87,7 +93,8 @@ public class LoginActivity extends AppCompatActivity {
         boolean superAdminExists = dbHelper.isSuperAdminExists();
         android.util.Log.d("LoginActivity", "Super Admin exists: " + superAdminExists);
 
-        if (!superAdminExists) {
+        if (!superAdminExists
+                && !new AndroidSyncPrefs(this).isServerMode()) {
             if (!checkStoragePermission()) {
                 android.util.Log.d("LoginActivity", "Storage permission not granted, waiting...");
                 return;
@@ -104,6 +111,7 @@ public class LoginActivity extends AppCompatActivity {
         editTextEmail        = findViewById(R.id.editTextEmail);
         editTextPassword     = findViewById(R.id.editTextPassword);
         buttonLogin          = findViewById(R.id.buttonLogin);
+        buttonServerSettings = findViewById(R.id.buttonServerSettings);
         buttonLoginWithIris  = findViewById(R.id.buttonLoginWithIris);
         buttonRegister       = findViewById(R.id.buttonRegister);
         textViewError        = findViewById(R.id.textViewError);
@@ -115,6 +123,16 @@ public class LoginActivity extends AppCompatActivity {
 
         buttonLogin.setOnClickListener(v -> attemptLogin());
 
+
+        buttonServerSettings.setOnClickListener(v -> {
+            Intent intent = new Intent(
+                    LoginActivity.this,
+                    ServerSettingsActivity.class
+            );
+            startActivity(intent);
+        });
+
+
         buttonLoginWithIris.setOnClickListener(v -> loginWithIris());
 
         textViewForgotPassword.setOnClickListener(v ->
@@ -124,10 +142,38 @@ public class LoginActivity extends AppCompatActivity {
     // ==================== ĐĂNG NHẬP BẰNG EMAIL + PASSWORD ====================
 
     private void attemptLogin() {
-        String email    = editTextEmail.getText().toString().trim();
-        String password = editTextPassword.getText().toString().trim();
+        String email = editTextEmail.getText().toString().trim();
+        String password = editTextPassword.getText().toString();
 
+        if (email.isEmpty() || password.isEmpty()) {
+            textViewError.setText("Vui lòng nhập email và mật khẩu");
+            textViewError.setVisibility(View.VISIBLE);
+            return;
+        }
+
+        AndroidSyncPrefs prefs = new AndroidSyncPrefs(this);
+
+
+        // Server Mode: xác thực bằng Flask
+        if (prefs.isServerMode()) {
+            attemptServerLogin(email, password);
+            return;
+        }
+
+        // Standalone Mode: giữ nguyên đăng nhập SQLite
         Cursor cursor = dbHelper.authenticateUser(email, password);
+
+        // Standalone Mode: kiểm tra Super Admin đã tồn tại chưa
+        if (!dbHelper.isSuperAdminExists()) {
+            Toast.makeText(
+                    this,
+                    "Vui lòng đăng ký Super Admin để sử dụng Standalone Mode",
+                    Toast.LENGTH_LONG
+            ).show();
+
+            startActivity(new Intent(this, RegisterAdminActivity.class));
+            return;
+        }
 
         if (cursor != null && cursor.moveToFirst()) {
             String role     = cursor.getString(cursor.getColumnIndexOrThrow(DatabaseHelper.COL_ADMIN_ROLE));
@@ -347,7 +393,8 @@ public class LoginActivity extends AppCompatActivity {
             android.util.Log.d("LoginActivity",
                     "Critical permissions: " + granted + "/" + grantResults.length + " granted");
 
-            if (!dbHelper.isSuperAdminExists()) {
+            if (!dbHelper.isSuperAdminExists()
+                    && !new AndroidSyncPrefs(this).isServerMode()) {
                 if (checkStoragePermission()) {
                     if (checkForBackupOnStartup()) return;
                     startActivity(new Intent(this, RegisterAdminActivity.class));
@@ -558,4 +605,114 @@ public class LoginActivity extends AppCompatActivity {
                     needed.toArray(new String[0]), REQUEST_ALL_PERMISSIONS);
         }
     }
+
+
+
+
+    private void attemptServerLogin(String email, String password) {
+
+        textViewError.setVisibility(View.GONE);
+        buttonLogin.setEnabled(false);
+        buttonLogin.setText("Đang đăng nhập...");
+
+        AuthRepository repository;
+
+        try {
+            repository = new AuthRepository(this);
+        } catch (Exception e) {
+            buttonLogin.setEnabled(true);
+            buttonLogin.setText("Đăng nhập");
+            textViewError.setText("Chưa cấu hình Server URL hợp lệ.");
+            textViewError.setVisibility(View.VISIBLE);
+            return;
+        }
+
+        repository.login(email, password, new AuthRepository.LoginCallback() {
+
+            @Override
+            public void onSuccess(LoginResponse response) {
+
+                if (response == null
+                        || response.admin == null
+                        || response.accessToken == null
+                        || response.accessToken.isEmpty()) {
+
+                    buttonLogin.setEnabled(true);
+                    buttonLogin.setText("Đăng nhập");
+                    textViewError.setText("Server trả về dữ liệu đăng nhập không hợp lệ");
+                    textViewError.setVisibility(View.VISIBLE);
+                    return;
+                }
+
+                AndroidSyncPrefs prefs =
+                        new AndroidSyncPrefs(LoginActivity.this);
+
+                // Lưu JWT
+                prefs.setAuthToken(response.accessToken);
+
+                prefs.setRefreshToken(response.refreshToken);
+
+                // Lưu thông tin Admin
+                pendingEmail = response.admin.email;
+                pendingRole = response.admin.role;
+                pendingName = response.admin.fullName;
+
+                editTextPassword.setText("");
+                buttonLogin.setText("Đang xác thực JWT...");
+
+                // Kiểm tra JWT bằng API /api/v1/auth/me
+                repository.getCurrentUser(new AuthRepository.MeCallback() {
+
+                    @Override
+                    public void onSuccess(MeResponse meResponse) {
+
+                        if (meResponse == null || meResponse.admin == null) {
+                            onError("Server không trả về thông tin Admin");
+                            return;
+                        }
+
+                        Toast.makeText(
+                                LoginActivity.this,
+                                "JWT hợp lệ: " + meResponse.admin.fullName,
+                                Toast.LENGTH_LONG
+                        ).show();
+
+                        // Cập nhật thông tin từ API /me
+                        pendingEmail = meResponse.admin.email;
+                        pendingRole = meResponse.admin.role;
+                        pendingName = meResponse.admin.fullName;
+
+                        buttonLogin.setEnabled(true);
+                        buttonLogin.setText("Đăng nhập");
+
+                        goToMain();
+                    }
+
+                    @Override
+                    public void onError(String message) {
+
+                        buttonLogin.setEnabled(true);
+                        buttonLogin.setText("Đăng nhập");
+
+                        textViewError.setText(
+                                "Đăng nhập thành công nhưng xác thực JWT thất bại: "
+                                        + message
+                        );
+                        textViewError.setVisibility(View.VISIBLE);
+                    }
+                });
+            }
+
+            @Override
+            public void onError(String message) {
+
+                buttonLogin.setEnabled(true);
+                buttonLogin.setText("Đăng nhập");
+
+                textViewError.setText("Đăng nhập thất bại: " + message);
+                textViewError.setVisibility(View.VISIBLE);
+            }
+        });
+    }
+
 }

@@ -15,6 +15,8 @@ public class AndroidSyncPrefs implements ISyncPrefs {
     private static final String KEY_AUTH_TOKEN = "key_auth_token";
     private static final String KEY_SERVER_MODE = "key_server_mode";
 
+    private static final String KEY_AUTO_SYNC = "key_auto_sync";
+
     private final SharedPreferences prefs;
     private final String deviceId;
 
@@ -84,4 +86,35 @@ public class AndroidSyncPrefs implements ISyncPrefs {
     public String getDeviceId() {
         return deviceId;
     }
+
+
+    public boolean isAutoSyncEnabled() {
+        return prefs.getBoolean(KEY_AUTO_SYNC, false);
+    }
+
+    public void setAutoSyncEnabled(boolean enabled) {
+        prefs.edit()
+                .putBoolean(KEY_AUTO_SYNC, enabled)
+                .apply();
+    }
+
+
+    public String getRefreshToken() {
+        return prefs.getString("refresh_token", "");
+    }
+
+    public void setRefreshToken(String token) {
+        prefs.edit()
+                .putString("refresh_token", token)
+                .apply();
+    }
+
+    public void clearAuthSession() {
+        prefs.edit()
+                .remove(KEY_AUTH_TOKEN)
+                .remove("refresh_token")
+                .apply();
+    }
+
+
 }
