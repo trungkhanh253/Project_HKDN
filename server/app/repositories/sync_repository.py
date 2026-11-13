@@ -12,6 +12,11 @@ from app.models import (
     EmailRecipient,
 )
 from app.repositories.base_repository import BaseRepository
+from app.permissions import (
+    PermissionDenied,
+    require_sync_batch_access,
+)
+from app.permissions import filter_accessible
 
 # Thứ tự bảng từ cha -> con để đảm bảo khóa ngoại khi đồng bộ
 SYNC_TABLES = [
@@ -98,9 +103,14 @@ class SyncRepository(BaseRepository):
         # Thu thập các cặp (seq, table_name, record) có seq > after_seq
         candidates = []
         for table_name, model_cls in SYNC_TABLES:
+            query = model_cls.query.filter(
+                model_cls.seq > after_seq
+            )
+
+            query = filter_accessible(query, model_cls)
+
             rows = (
-                model_cls.query
-                .filter(model_cls.seq > after_seq)
+                query
                 .order_by(model_cls.seq.asc())
                 .limit(limit + 1)
                 .all()
@@ -186,8 +196,9 @@ class SyncRepository(BaseRepository):
                 ).first()
 
         elif table_name == "checkin_history":
-            if item.get("checkin_id") is not None:
-                return CheckinHistory.query.filter_by(checkin_id=item["checkin_id"]).first()
+            # UUID đã được kiểm tra ở đầu hàm.
+            # Không sử dụng checkin_id từ Android để tìm bản ghi.
+            return None
 
         elif table_name == "email_recipients":
             if item.get("subject_id") and item.get("email_address"):
@@ -201,6 +212,69 @@ class SyncRepository(BaseRepository):
                 return EmailRecipient.query.filter_by(email_id=item["email_id"]).first()
 
         return None
+
+
+    @staticmethod
+    def _authorize_push_changes(changes):
+        from app.permissions import require_sync_batch_access
+
+        normalized = []
+
+        for table_name, item in changes:
+            if not isinstance(item, dict):
+                raise ValueError(
+                    "Dữ liệu đồng bộ phải là JSON object."
+                )
+
+            if table_name not in TABLE_NAME_ALIASES:
+                raise ValueError(
+                    f"Bảng '{table_name}' không hợp lệ."
+                )
+
+            canonical_name, model_cls = TABLE_NAME_ALIASES[
+                table_name
+            ]
+
+            existing = SyncRepository._find_existing(
+                canonical_name,
+                model_cls,
+                item
+            )
+
+
+            # Ngăn UUID trỏ tới một bản ghi nhưng
+            # khóa nghiệp vụ lại trỏ tới bản ghi khác.
+            if existing is not None:
+                identity_fields = {
+                    "admin": ("admin_id",),
+                    "subjects": ("subject_id",),
+                    "students": ("student_id",),
+                    "enrollments": (
+                        "student_id", "subject_id"
+                    ),
+                    "checkin_history": ("checkin_id",),
+                    "email_recipients": ("email_id",),
+                }
+
+                for field in identity_fields.get(
+                    canonical_name, ()
+                ):
+                    supplied = item.get(field)
+                    actual = getattr(existing, field)
+
+                    if supplied is not None and supplied != actual:
+                        raise PermissionDenied(
+                            f"Không được thay đổi {field} "
+                            f"của bản ghi hiện có."
+                        )
+
+
+            normalized.append(
+                (canonical_name, item, existing)
+            )
+
+        require_sync_batch_access(normalized)
+
 
     @staticmethod
     def _push_outbox_change_list(changes_list: list) -> dict:
@@ -216,6 +290,36 @@ class SyncRepository(BaseRepository):
         synced_uuids = []
         failed_uuids = []
         errors = []
+
+        authorization_changes = []
+
+        for change in changes_list:
+            if not isinstance(change, dict):
+                raise ValueError("Thay đổi không hợp lệ.")
+
+            table_name = str(
+                change.get("table_name") or ""
+            ).strip().lower()
+
+            item = dict(
+                change.get("payload")
+                if isinstance(change.get("payload"), dict)
+                else {}
+            )
+
+            if change.get("uuid"):
+                item["uuid"] = str(change["uuid"])
+
+            if change.get("operation", "").upper() == "DELETE":
+                item["deleted_at"] = (
+                    change.get("updated_at") or "DELETE"
+                )
+
+            authorization_changes.append((table_name, item))
+
+        SyncRepository._authorize_push_changes(
+            authorization_changes
+        )
 
         # Sắp xếp theo thứ tự bảng cha -> con để hạn chế lỗi khóa ngoại khi cùng lô
         indexed_changes = list(enumerate(changes_list))
@@ -362,6 +466,37 @@ class SyncRepository(BaseRepository):
 
         changes_root = payload.get("changes") if isinstance(payload.get("changes"), dict) else payload
 
+        allowed_tables = {name for name, _ in SYNC_TABLES}
+
+        unknown_tables = set(changes_root) - allowed_tables
+
+        if unknown_tables:
+            raise ValueError(
+                f"Bảng đồng bộ không hợp lệ: {sorted(unknown_tables)}"
+            )
+
+        authorization_changes = []
+
+        for table_name, _ in SYNC_TABLES:
+            records = changes_root.get(table_name, [])
+
+            if records is None:
+                continue
+
+            if not isinstance(records, list):
+                raise ValueError(
+                    f"Trường '{table_name}' phải là danh sách."
+                )
+
+            for item in records:
+                authorization_changes.append(
+                    (table_name, item)
+                )
+
+        SyncRepository._authorize_push_changes(
+            authorization_changes
+        )
+
         applied_counts = {t: 0 for t, _ in SYNC_TABLES}
         skipped_counts = {t: 0 for t, _ in SYNC_TABLES}
         synced_uuids = []
@@ -392,8 +527,7 @@ class SyncRepository(BaseRepository):
                     )
                     # Last-Write-Wins (LWW): nếu cùng thực thể mà client gửi updated_at cũ hơn trên server -> bỏ qua
                     if (
-                        not is_new_uuid_entity
-                        and incoming_updated_at is not None
+                        incoming_updated_at is not None
                         and existing.updated_at is not None
                         and incoming_updated_at < existing.updated_at
                     ):
@@ -464,9 +598,7 @@ class SyncRepository(BaseRepository):
     ):
         now = BaseRepository.get_current_time()
         if is_new or not getattr(obj, "uuid", None):
-            obj.uuid = item.get("uuid") or BaseRepository.generate_uuid()
-        elif item.get("uuid"):
-            obj.uuid = item["uuid"]
+            obj.uuid = str(item.get("uuid") or item.get("change_id") or BaseRepository.generate_uuid())
 
         obj.updated_at = incoming_updated_at or now
         if "deleted_at" in item:

@@ -217,13 +217,13 @@ def create_app():
         ).scalar()
         print(f"[3] Kiểu dữ liệu face_embedding: {vec_type}")
 
-    # API kiểm tra Flask Server
-        @app.get("/health")
-        def health():
-            return {
-                "status": "ok",
-                "service": "attendance-server"
-            }, 200
+
+    @app.get("/health")
+    def health():
+        return {
+            "status": "ok",
+            "service": "attendance-server"
+        }, 200        
         
          
 

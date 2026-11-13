@@ -3,11 +3,12 @@ import redis
 from rq import Queue
 from rq.job import Job
 from rq.exceptions import NoSuchJobError
-from flask import Blueprint, jsonify, request
 from sqlalchemy.exc import IntegrityError, DataError
+from flask import Blueprint, jsonify, request, g
+from app.models import Admin, Subject, Student
+from app.permissions import filter_accessible
 
 from app import db
-from app.models import Admin, Subject
 from app.auth import (
     ACCESS_TOKEN_EXPIRES,
     create_jwt_token,
@@ -20,6 +21,7 @@ from app.repositories.student_repository import StudentRepository
 from app.repositories.subject_repository import SubjectRepository
 from app.repositories.sync_repository import SyncRepository
 from app.tasks import process_csv_import
+from app.permissions import PermissionDenied
 
 api_bp = Blueprint("api_v1", __name__)
 
@@ -185,26 +187,71 @@ def auth_me():
 def list_students():
     limit = request.args.get("limit", 100, type=int)
     offset = request.args.get("offset", 0, type=int)
-    students = StudentRepository.get_all(limit=max(1, min(limit, 500)), offset=max(0, offset))
-    return jsonify({"count": len(students), "students": [s.to_dict() for s in students]}), 200
+
+    limit = max(1, min(limit, 500))
+    offset = max(0, offset)
+
+    query = Student.query.filter(
+        Student.deleted_at.is_(None)
+    )
+
+    query = filter_accessible(query, Student)
+
+    students = (
+        query.order_by(Student.student_id)
+        .limit(limit)
+        .offset(offset)
+        .all()
+    )
+
+    return jsonify({
+        "count": len(students),
+        "students": [s.to_dict() for s in students]
+    }), 200
 
 
 @api_bp.route("/subjects", methods=["GET"])
 @require_auth
 def list_subjects():
     instructor_id = request.args.get("instructor_id")
+
+    query = Subject.query.filter(
+        Subject.deleted_at.is_(None)
+    )
+
+    query = filter_accessible(query, Subject)
+
     if instructor_id:
-        subjects = SubjectRepository.get_by_instructor(instructor_id)
-    else:
-        subjects = Subject.query.filter_by(deleted_at=None).all()
-    return jsonify({"count": len(subjects), "subjects": [s.to_dict() for s in subjects]}), 200
+        query = query.filter(
+            Subject.instructor_id == instructor_id
+        )
+
+    subjects = query.order_by(Subject.subject_id).all()
+
+    return jsonify({
+        "count": len(subjects),
+        "subjects": [s.to_dict() for s in subjects]
+    }), 200
 
 
 @api_bp.route("/admins", methods=["GET"])
 @require_auth
 def list_admins():
-    admins = Admin.query.filter_by(deleted_at=None).all()
-    return jsonify({"count": len(admins), "admins": [a.to_dict(include_password=False) for a in admins]}), 200
+    query = Admin.query.filter(
+        Admin.deleted_at.is_(None)
+    )
+
+    query = filter_accessible(query, Admin)
+
+    admins = query.order_by(Admin.admin_id).all()
+
+    return jsonify({
+        "count": len(admins),
+        "admins": [
+            a.to_dict(include_password=False)
+            for a in admins
+        ]
+    }), 200
 
 
 @api_bp.route("/import/csv", methods=["POST"])
@@ -390,3 +437,11 @@ def sync_status():
     )
 
 
+@api_bp.app_errorhandler(PermissionDenied)
+def handle_permission_denied(error):
+    db.session.rollback()
+    return error_response(
+        "FORBIDDEN",
+        str(error),
+        403
+    )

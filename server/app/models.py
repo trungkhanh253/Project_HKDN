@@ -68,7 +68,7 @@ class Admin(db.Model, SyncMetadataMixin):
     has_iris = db.Column(db.Integer, default=0, server_default="0")
     face_embedding = db.Column(Vector(192), nullable=True)
 
-    def to_dict(self, include_password=False):
+    def to_dict(self, include_password=False, include_sensitive=False):
         data = {
             "admin_id": self.admin_id,
             "email": self.email,
@@ -80,18 +80,22 @@ class Admin(db.Model, SyncMetadataMixin):
             "description": self.description,
             "role": self.role,
             "admin_code": self.admin_code,
-            "reset_token": self.reset_token,
-            "expire_at": self.expire_at,
             "is_first_login": self.is_first_login,
             "has_iris": self.has_iris,
-            "face_embedding": _format_embedding(self.face_embedding),
             "uuid": self.uuid,
             "updated_at": _format_dt(self.updated_at),
             "deleted_at": _format_dt(self.deleted_at),
             "seq": self.seq,
         }
+
+        if include_sensitive:
+            data["face_embedding"] = _format_embedding(
+                self.face_embedding
+            )
+
         if include_password:
             data["password"] = self.password
+
         return data
 
 
