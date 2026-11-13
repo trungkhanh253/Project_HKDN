@@ -336,8 +336,8 @@ public class DatabaseHelper extends SQLiteOpenHelper {
         SQLiteDatabase db = getWritableDatabase();
         for (String t : SYNC_TABLES) {
             db.execSQL("INSERT INTO " + TABLE_SYNC_OUTBOX + "(uuid,table_name,operation,updated_at) " +
-                    "SELECT uuid,'" + t + "','INSERT'," + NOW_SQL + " FROM " + t +
-                    " WHERE uuid NOT IN (SELECT uuid FROM " + TABLE_SYNC_OUTBOX +
+                    "SELECT uuid,'" + t + "','INSERT',COALESCE(updated_at," + NOW_SQL + ") FROM " + t +
+                    " WHERE uuid IS NOT NULL AND uuid NOT IN (SELECT uuid FROM " + TABLE_SYNC_OUTBOX +
                     " WHERE table_name='" + t + "' AND status='PENDING')");
         }
     }

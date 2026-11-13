@@ -414,6 +414,7 @@ public class StudentListActivity extends AppCompatActivity {
                 DatabaseHelper.COL_CHECKIN_TIME + ", " + DatabaseHelper.COL_CHECKIN_DATE +
                 ") VALUES (?, ?, ?, ?)";
         db.execSQL(query, new Object[]{studentId, currentSubjectId, currentTime, currentDate});
+        com.iritech.irissample.sync.worker.SyncWorkScheduler.triggerSyncIfServerMode(this);
 
         String studentName = "";
         Cursor cursor = db.rawQuery("SELECT " + DatabaseHelper.COL_FULL_NAME + " FROM " + DatabaseHelper.TABLE_STUDENTS +
@@ -641,6 +642,7 @@ public class StudentListActivity extends AppCompatActivity {
                                 selectedStudentId = null;
                             }
                             reloadStudents(currentSubjectId);
+                            com.iritech.irissample.sync.worker.SyncWorkScheduler.triggerSyncIfServerMode(StudentListActivity.this);
                         } else {
                             Toast.makeText(StudentListActivity.this, "Xóa thất bại", Toast.LENGTH_SHORT).show();
                         }
@@ -660,6 +662,7 @@ public class StudentListActivity extends AppCompatActivity {
                                 selectedStudentId = null;
                             }
                             reloadStudents(currentSubjectId);
+                            com.iritech.irissample.sync.worker.SyncWorkScheduler.triggerSyncIfServerMode(StudentListActivity.this);
                         } else {
                             Toast.makeText(StudentListActivity.this, "Xóa thất bại", Toast.LENGTH_SHORT).show();
                         }
@@ -667,6 +670,22 @@ public class StudentListActivity extends AppCompatActivity {
                     .setNegativeButton("Hủy", null)
                     .show();
         }
+    }
+
+    @Override
+    protected void onResume() {
+        super.onResume();
+        reloadStudents(currentSubjectId);
+        com.iritech.irissample.sync.worker.SyncWorkScheduler.startForegroundAutoSync(
+                this,
+                () -> reloadStudents(currentSubjectId)
+        );
+    }
+
+    @Override
+    protected void onPause() {
+        super.onPause();
+        com.iritech.irissample.sync.worker.SyncWorkScheduler.stopForegroundAutoSync();
     }
 
     /**

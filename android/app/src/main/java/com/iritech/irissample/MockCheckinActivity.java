@@ -224,6 +224,7 @@ public class MockCheckinActivity extends AppCompatActivity {
         long rowId = db.insert(DatabaseHelper.TABLE_CHECKIN_HISTORY, null, values);
         
         if (rowId != -1) {
+            com.iritech.irissample.sync.worker.SyncWorkScheduler.triggerSyncIfServerMode(this);
             Toast.makeText(this, studentName + " - Điểm danh lúc: " + currentTime, 
                           Toast.LENGTH_SHORT).show();
         } else {

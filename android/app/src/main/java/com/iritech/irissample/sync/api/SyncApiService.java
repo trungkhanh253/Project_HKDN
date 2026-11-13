@@ -1,5 +1,6 @@
 package com.iritech.irissample.sync.api;
 
+import com.google.gson.JsonObject;
 import com.iritech.irissample.sync.model.SyncPullResponse;
 import com.iritech.irissample.sync.model.SyncPushRequest;
 import com.iritech.irissample.sync.model.SyncPushResponse;
@@ -22,4 +23,7 @@ public interface SyncApiService {
             @Query("since_seq") long sinceSeq,
             @Query("limit") int limit
     );
+
+    @GET("api/v1/sync/status")
+    Call<JsonObject> getSyncStatus();
 }

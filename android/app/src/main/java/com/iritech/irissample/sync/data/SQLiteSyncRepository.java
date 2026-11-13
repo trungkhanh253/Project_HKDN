@@ -309,9 +309,9 @@ public class SQLiteSyncRepository implements SyncRepository {
                 previousSeq = seq;
             }
 
-            if (!changes.isEmpty() && previousSeq != newSeq) {
+            if (!changes.isEmpty() && previousSeq > newSeq) {
                 throw new IllegalArgumentException(
-                        "newSeq does not match last change seq"
+                        "newSeq cannot be smaller than last change seq"
                 );
             }
 
@@ -541,6 +541,10 @@ public class SQLiteSyncRepository implements SyncRepository {
                 continue;
             }
 
+            if (exists && ("checkin_id".equals(key) || "email_id".equals(key))) {
+                continue;
+            }
+
             JsonElement element = payload.get(key);
 
             if (element == null || element.isJsonNull()) {
@@ -654,6 +658,8 @@ public class SQLiteSyncRepository implements SyncRepository {
         sanitized.remove("reset_token");
         sanitized.remove("checkin_password");
         sanitized.remove("face_embedding");
+        sanitized.remove("checkin_id");
+        sanitized.remove("email_id");
 
         return sanitized;
     }
