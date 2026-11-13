@@ -14,6 +14,7 @@ from app.auth import (
     decode_jwt_token,
     extract_bearer_token,
     verify_password,
+    require_auth,
 )
 from app.repositories.student_repository import StudentRepository
 from app.repositories.subject_repository import SubjectRepository
@@ -131,7 +132,10 @@ def auth_refresh():
         )
 
     try:
-        payload = decode_jwt_token(token)
+        payload = decode_jwt_token(
+            token,
+            expected_type="refresh"
+        )
     except ValueError as exc:
         return error_response("INVALID_TOKEN", str(exc), 401)
 
@@ -177,6 +181,7 @@ def auth_me():
 
 
 @api_bp.route("/students", methods=["GET"])
+@require_auth
 def list_students():
     limit = request.args.get("limit", 100, type=int)
     offset = request.args.get("offset", 0, type=int)
@@ -185,6 +190,7 @@ def list_students():
 
 
 @api_bp.route("/subjects", methods=["GET"])
+@require_auth
 def list_subjects():
     instructor_id = request.args.get("instructor_id")
     if instructor_id:
@@ -195,12 +201,14 @@ def list_subjects():
 
 
 @api_bp.route("/admins", methods=["GET"])
+@require_auth
 def list_admins():
     admins = Admin.query.filter_by(deleted_at=None).all()
     return jsonify({"count": len(admins), "admins": [a.to_dict(include_password=False) for a in admins]}), 200
 
 
 @api_bp.route("/import/csv", methods=["POST"])
+@require_auth
 def import_csv():
     if "file" not in request.files:
         return error_response(
@@ -257,6 +265,7 @@ def import_csv():
 
 
 @api_bp.route("/jobs/<string:job_id>", methods=["GET"])
+@require_auth
 def get_job_status(job_id: str):
     conn = _get_redis_conn()
     try:
@@ -293,6 +302,7 @@ def get_job_status(job_id: str):
 
 
 @api_bp.route("/sync/push", methods=["POST"])
+@require_auth
 def sync_push():
     payload = request.get_json(silent=True)
     if not isinstance(payload, dict):
@@ -324,6 +334,7 @@ def sync_push():
 
 
 @api_bp.route("/sync/pull", methods=["GET", "POST"])
+@require_auth
 def sync_pull():
     is_android_since_seq = "since_seq" in request.args
     if request.method == "POST":
@@ -366,6 +377,7 @@ def sync_pull():
 
 
 @api_bp.route("/sync/status", methods=["GET"])
+@require_auth
 def sync_status():
     return (
         jsonify(

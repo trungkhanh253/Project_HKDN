@@ -5,7 +5,7 @@ import json
 import os
 import time
 from functools import wraps
-from flask import current_app, request, jsonify
+from flask import current_app, request, jsonify, g
 
 ACCESS_TOKEN_EXPIRES = 3600          # 1 giờ
 REFRESH_TOKEN_EXPIRES = 7 * 86400    # 7 ngày
@@ -21,11 +21,18 @@ def _b64url_decode(segment: str) -> bytes:
 
 
 def _get_secret() -> bytes:
-    secret = (
-        current_app.config.get("SECRET_KEY")
-        or os.getenv("SECRET_KEY")
-        or "hkdn-default-secret-key-2026"
-    )
+    secret = current_app.config.get("SECRET_KEY")
+
+    if not isinstance(secret, str) or not secret.strip():
+        raise RuntimeError(
+            "SECRET_KEY chưa được cấu hình."
+        )
+
+    if secret == "hkdn-default-secret-key-2026":
+        raise RuntimeError(
+            "Không được sử dụng JWT secret mặc định."
+        )
+
     return secret.encode("utf-8")
 
 
@@ -96,8 +103,19 @@ def decode_jwt_token(token: str, expected_type: str = None) -> dict:
 
     now = int(time.time())
     exp = payload.get("exp")
-    if exp is not None and int(exp) < now:
+    iat = payload.get("iat")
+
+    if type(exp) is not int or type(iat) is not int:
+        raise ValueError("Token thiếu thời gian hợp lệ.")
+
+    if exp <= now:
         raise ValueError("Token đã hết hạn.")
+
+    if iat > now:
+        raise ValueError("Thời gian phát hành token không hợp lệ.")
+
+    if not isinstance(payload.get("sub"), str) or not payload["sub"]:
+        raise ValueError("Token thiếu thông tin tài khoản.")
 
     if expected_type and payload.get("type") != expected_type:
         raise ValueError(f"Yêu cầu loại token '{expected_type}'.")
@@ -111,4 +129,61 @@ def extract_bearer_token() -> str:
         return auth_header[7:].strip()
     return None
 
+
+def require_auth(func):
+    @wraps(func)
+    def wrapper(*args, **kwargs):
+        from app.models import Admin
+
+        token = extract_bearer_token()
+
+        if not token:
+            return jsonify({
+                "error": "UNAUTHORIZED",
+                "message": "Thiếu Bearer token."
+            }), 401
+
+        try:
+            payload = decode_jwt_token(
+                token,
+                expected_type="access"
+            )
+        except (ValueError, TypeError, OverflowError):
+            return jsonify({
+                "error": "INVALID_TOKEN",
+                "message": "Token không hợp lệ hoặc đã hết hạn."
+            }), 401
+
+        admin_id = payload.get("sub")
+
+        if not isinstance(admin_id, str) or not admin_id:
+            return jsonify({
+                "error": "INVALID_TOKEN",
+                "message": "Token thiếu thông tin tài khoản."
+            }), 401
+
+        admin = Admin.query.filter_by(
+            admin_id=admin_id,
+            deleted_at=None
+        ).first()
+
+        if admin is None:
+            return jsonify({
+                "error": "UNAUTHORIZED",
+                "message": "Tài khoản không tồn tại hoặc đã bị xóa."
+            }), 401
+
+        if admin.role not in ("ADMIN", "SUPER_ADMIN"):
+            return jsonify({
+                "error": "FORBIDDEN",
+                "message": "Tài khoản không có quyền truy cập."
+            }), 403
+
+        g.current_admin = admin
+        g.current_admin_id = admin.admin_id
+        g.current_role = admin.role
+
+        return func(*args, **kwargs)
+
+    return wrapper
 

@@ -64,7 +64,12 @@ def create_app():
 
     app.config["SQLALCHEMY_DATABASE_URI"] = database_url
     app.config["SQLALCHEMY_TRACK_MODIFICATIONS"] = False
-    app.config["SECRET_KEY"] = os.getenv("SECRET_KEY", "hkdn-default-secret-key-2026")
+    secret_key = os.getenv("SECRET_KEY", "").strip()
+
+    if not secret_key or secret_key == "hkdn-default-secret-key-2026":
+        raise RuntimeError("SECRET_KEY chưa được cấu hình an toàn.")
+
+    app.config["SECRET_KEY"] = secret_key
 
     db.init_app(app)
 

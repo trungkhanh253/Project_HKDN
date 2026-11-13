@@ -44,14 +44,37 @@ def session(api, v1):
 
 
 # ---------- yêu cầu token ----------
-@pytest.mark.parametrize("method,path", [("post", "/sync/push"), ("get", "/sync/pull"),
-                                         ("post", "/import/csv"), ("get", "/jobs/khong-ton-tai")])
+
+@pytest.mark.parametrize("method,path", [
+    ("post", "/sync/push"),
+    ("get", "/sync/pull"),
+    ("get", "/sync/status"),
+    ("post", "/import/csv"),
+    ("get", "/students"),
+    ("get", "/subjects"),
+    ("get", "/admins"),
+    ("get", "/jobs/khong-ton-tai"),
+])
 def test_data_endpoints_require_token(api, v1, method, path):
-    """routes.py hiện không kiểm tra token ở các endpoint này. Bảng admin nằm trong đồng bộ,
-    và import CSV (type=admin) nhận cả cột role, nên không cần đăng nhập vẫn tạo được SUPER_ADMIN."""
     kwargs = {"json": {}} if path == "/sync/push" else {}
-    r = getattr(api, method)(f"{v1}{path}", timeout=10, **kwargs)
-    assert r.status_code in (401, 403), f"HTTP {r.status_code}: endpoint đồng bộ không đòi token"
+
+    r = getattr(api, method)(
+        f"{v1}{path}",
+        timeout=10,
+        **kwargs
+    )
+
+    assert r.status_code == 401, (
+        f"HTTP {r.status_code}: "
+        f"{method.upper()} {path} không yêu cầu JWT"
+    )
+
+# def test_data_endpoints_require_token(api, v1, method, path):
+#     """routes.py hiện không kiểm tra token ở các endpoint này. Bảng admin nằm trong đồng bộ,
+#     và import CSV (type=admin) nhận cả cột role, nên không cần đăng nhập vẫn tạo được SUPER_ADMIN."""
+#     kwargs = {"json": {}} if path == "/sync/push" else {}
+#     r = getattr(api, method)(f"{v1}{path}", timeout=10, **kwargs)
+#     assert r.status_code in (401, 403), f"HTTP {r.status_code}: endpoint đồng bộ không đòi token"
 
 
 # ---------- JWT ----------
@@ -105,3 +128,17 @@ def test_pull_does_not_expose_reset_token(api, v1, session):
         assert all(rec.get("reset_token") != secret for rec in found)
     finally:  # dọn: xóa mềm tài khoản thử
         push(api, v1, hdr, {"admin": [{**base, "updated_at": iso(30), "deleted_at": iso(30)}]})
+
+
+def test_refresh_token_cannot_access_data(api, v1, session):
+    headers = {
+        "Authorization": f"Bearer {session['refresh_token']}"
+    }
+
+    r = api.get(
+        f"{v1}/students",
+        headers=headers,
+        timeout=10
+    )
+
+    assert r.status_code == 401
