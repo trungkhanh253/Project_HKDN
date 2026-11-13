@@ -67,7 +67,8 @@ def create_app():
     app.config["SECRET_KEY"] = os.getenv("SECRET_KEY", "hkdn-default-secret-key-2026")
 
     db.init_app(app)
-    migrate.init_app(app, db)
+
+    migrate.init_app(app, db)   
 
     # Import models để Flask-Migrate / Alembic nhận diện đầy đủ 6 bảng
     from app import models  # noqa: F401
@@ -210,6 +211,16 @@ def create_app():
             )
         ).scalar()
         print(f"[3] Kiểu dữ liệu face_embedding: {vec_type}")
+
+    # API kiểm tra Flask Server
+        @app.get("/health")
+        def health():
+            return {
+                "status": "ok",
+                "service": "attendance-server"
+            }, 200
+        
+         
 
     return app
 

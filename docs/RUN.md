@@ -46,15 +46,19 @@ docker compose exec postgres psql -U postgres -d attendance_test -c "\dt"
 Kết quả đúng: 6 bảng nghiệp vụ (`admin`, `students`, `subjects`, `enrollments`, `checkin_history`, `email_recipients`) và `alembic_version`.
 
 ## 5. Chạy test
+Chạy trong thư mục `server` (không chạy ở thư mục gốc repo, vì pytest sẽ quét nhầm cả file `test_check.py` của nhóm).
 ```powershell
 cd server
 python -m pip install -r requirements-dev.txt
 python -m pytest              # tất cả
-python -m pytest -m db        # schema DB
-python -m pytest -m api       # API
+python -m pytest -m db        # schema DB (dùng DB test)
+python -m pytest -m api       # API, đồng bộ, bảo mật (dùng DB chạy thật qua server)
 ```
 - Test API tự skip nếu server không phản hồi; test DB tự skip nếu thiếu `TEST_DATABASE_URL`.
-- Test import CSV ghi sinh viên mẫu `TEST0001`, `TEST0002` vào DB chạy thật; xóa thủ công nếu cần.
+- Test API/đồng bộ/bảo mật dùng tài khoản seed: chạy `docker compose exec api python seed_admin.py` trước. Mặc định đăng nhập bằng `admin@hkdn.edu.vn` / `admin123`; đổi bằng `TEST_ADMIN_EMAIL`, `TEST_ADMIN_PASSWORD` trong `.env`. `TEST_API_PREFIX` mặc định là `/api/v1`.
+- **xfailed**: chỗ đã ghi nhận đang chờ Lead/nhóm Server quyết định, không phải lỗi của người chạy test. Nếu được sửa đúng, pytest báo **XPASS**.
+- **failed** trong `test_security.py` và `test_sync_edge_cases.py` là lỗi/lỗ hổng thật của server đang chờ sửa (không phải lỗi môi trường của bạn); xem danh sách trong Pull Request.
+- Các test API ghi dữ liệu mẫu (mã bắt đầu bằng `T`, và `TEST0001`, `TEST0002` của test import CSV) vào DB chạy thật; dọn bằng `docker compose down -v` khi cần.
 
 ## 6. Dừng / dọn dẹp
 ```powershell
@@ -70,6 +74,7 @@ Nếu đổi `POSTGRES_PASSWORD` sau khi Postgres đã khởi tạo, phải dùn
 | `go-yaml load error ... L1:C1` | File override bị sai mã hóa; tạo lại bằng VS Code, chọn UTF-8 |
 | `password authentication failed` | Mật khẩu trong `.env` khác mật khẩu volume đã khởi tạo: `docker compose down -v` rồi `up` lại |
 | `Could not locate a Flask application` | Thêm `--app "app:create_app()"` vào lệnh `flask` |
+| `ModuleNotFoundError: flask_sqlalchemy` khi chạy pytest | Đang chạy ở thư mục gốc repo; `cd server` rồi chạy lại |
 | `404` ở mọi API | Route chưa được viết: `docker compose exec api flask --app "app:create_app()" routes` |
 | Job `/jobs/{id}` luôn `queued` | Container `worker` không chạy hoặc `REDIS_URL` sai: `docker compose logs worker` |
 | `connection refused` khi chạy pytest | Container chưa Up (`docker compose ps`) hoặc `TEST_*` trỏ sai cổng |
