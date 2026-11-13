@@ -651,6 +651,235 @@ paths:
                   code: "JOB_NOT_FOUND"
                   message: "Không tìm thấy tác vụ nền với id 'does-not-exist-123'."
 
+  /students:
+    get:
+      tags: [Students]
+      summary: Lấy danh sách sinh viên phân trang và tìm kiếm (chuẩn hóa Web API)
+      parameters:
+        - name: q
+          in: query
+          required: false
+          schema:
+            type: string
+          description: "Từ khóa tìm kiếm (theo mã SV, họ tên, email, sđt)"
+        - name: sort
+          in: query
+          required: false
+          schema:
+            type: string
+          description: "Cột và chiều sắp xếp, vd: student_id:asc, full_name:desc"
+        - name: limit
+          in: query
+          required: false
+          schema:
+            type: integer
+            default: 10
+        - name: offset
+          in: query
+          required: false
+          schema:
+            type: integer
+            default: 0
+      responses:
+        '200':
+          description: Danh sách sinh viên
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  items:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/StudentRecord'
+                  total:
+                    type: integer
+                  limit:
+                    type: integer
+                  offset:
+                    type: integer
+
+    post:
+      tags: [Students]
+      summary: Thêm mới sinh viên (có thể kèm subject_id để tự ghi danh)
+      security:
+        - BearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+                - student_id
+                - full_name
+              properties:
+                student_id:
+                  type: string
+                full_name:
+                  type: string
+                email:
+                  type: string
+                phone:
+                  type: string
+                subject_id:
+                  type: string
+                  description: "Mã môn học nếu muốn tự động ghi danh sinh viên vào môn này"
+      responses:
+        '201':
+          description: Tạo sinh viên thành công
+        '403':
+          description: Giảng viên không có quyền trên môn học
+        '409':
+          description: Sinh viên đã tồn tại
+        '422':
+          description: Thiếu thông tin bắt buộc
+
+  /students/{id}:
+    get:
+      tags: [Students]
+      summary: Lấy thông tin chi tiết một sinh viên
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Thông tin chi tiết sinh viên
+        '404':
+          description: Không tìm thấy sinh viên
+
+    put:
+      tags: [Students]
+      summary: Cập nhật thông tin sinh viên
+      security:
+        - BearerAuth: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                full_name:
+                  type: string
+                email:
+                  type: string
+                phone:
+                  type: string
+                photo_path:
+                  type: string
+      responses:
+        '200':
+          description: Cập nhật thành công
+        '403':
+          description: Giảng viên không phụ trách sinh viên này
+        '404':
+          description: Không tìm thấy sinh viên
+
+    delete:
+      tags: [Students]
+      summary: Xóa mềm sinh viên (cập nhật deleted_at và tăng seq)
+      security:
+        - BearerAuth: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Xóa mềm thành công
+        '403':
+          description: Giảng viên không có quyền xóa
+        '404':
+          description: Không tìm thấy sinh viên
+
+  /attendance:
+    post:
+      tags: [Attendance]
+      summary: Ghi nhận điểm danh sinh viên (có kiểm tra phân quyền và chống trùng uuid)
+      security:
+        - BearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+                - student_id
+                - subject_id
+                - checkin_time
+                - checkin_date
+              properties:
+                student_id:
+                  type: string
+                subject_id:
+                  type: string
+                checkin_time:
+                  type: string
+                  example: "08:15:00"
+                checkin_date:
+                  type: string
+                  example: "2026-11-13"
+                uuid:
+                  type: string
+                status:
+                  type: string
+                  default: "PRESENT"
+      responses:
+        '201':
+          description: Ghi nhận điểm danh mới thành công
+        '200':
+          description: Điểm danh đã tồn tại (chống trùng lặp theo uuid)
+        '403':
+          description: Giảng viên không phụ trách môn học này
+        '404':
+          description: Không tìm thấy sinh viên hoặc môn học
+        '422':
+          description: Sinh viên chưa ghi danh vào môn học này
+
+    get:
+      tags: [Attendance]
+      summary: Lấy danh sách lịch sử điểm danh theo môn học và ngày
+      parameters:
+        - name: subject_id
+          in: query
+          required: false
+          schema:
+            type: string
+        - name: date
+          in: query
+          required: false
+          schema:
+            type: string
+            description: "Ngày điểm danh dạng YYYY-MM-DD"
+        - name: limit
+          in: query
+          required: false
+          schema:
+            type: integer
+            default: 100
+        - name: offset
+          in: query
+          required: false
+          schema:
+            type: integer
+            default: 0
+      responses:
+        '200':
+          description: Danh sách điểm danh
+
   /sync/push:
     post:
       tags: [Synchronization]

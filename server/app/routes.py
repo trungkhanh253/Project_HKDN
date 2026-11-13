@@ -7,7 +7,7 @@ from flask import Blueprint, jsonify, request
 from sqlalchemy.exc import IntegrityError, DataError
 
 from app import db
-from app.models import Admin, Subject
+from app.models import Admin, Subject, Student, Enrollment, CheckinHistory
 from app.auth import (
     ACCESS_TOKEN_EXPIRES,
     create_jwt_token,
@@ -18,6 +18,8 @@ from app.auth import (
 from app.repositories.student_repository import StudentRepository
 from app.repositories.subject_repository import SubjectRepository
 from app.repositories.sync_repository import SyncRepository
+from app.repositories.checkin_repository import CheckinRepository
+from app.repositories.admin_repository import AdminRepository
 from app.tasks import process_csv_import
 
 api_bp = Blueprint("api_v1", __name__)
@@ -176,28 +178,318 @@ def auth_me():
     return jsonify({"admin": admin.to_dict(include_password=False)}), 200
 
 
+def _get_authenticated_admin():
+    token = extract_bearer_token()
+    if not token:
+        return None, error_response(
+            "MISSING_TOKEN",
+            "Thiếu token xác thực trong header Authorization (Bearer <token>).",
+            401,
+        )
+    try:
+        payload = decode_jwt_token(token, expected_type="access")
+    except ValueError as exc:
+        return None, error_response("INVALID_TOKEN", str(exc), 401)
+
+    admin_id = payload.get("sub")
+    admin = Admin.query.filter_by(admin_id=admin_id, deleted_at=None).first()
+    if not admin:
+        return None, error_response("ADMIN_NOT_FOUND", "Không tìm thấy tài khoản quản trị viên.", 404)
+
+    return admin, None
+
+
+# ==========================================
+# GĐ 8 & GĐ 3: API SINH VIÊN (CRUD & Phân quyền)
+# ==========================================
+
 @api_bp.route("/students", methods=["GET"])
 def list_students():
-    limit = request.args.get("limit", 100, type=int)
-    offset = request.args.get("offset", 0, type=int)
-    students = StudentRepository.get_all(limit=max(1, min(limit, 500)), offset=max(0, offset))
-    return jsonify({"count": len(students), "students": [s.to_dict() for s in students]}), 200
+    limit = max(1, min(request.args.get("limit", 100, type=int), 500))
+    offset = max(0, request.args.get("offset", 0, type=int))
+    q = request.args.get("q")
+    sort = request.args.get("sort")
 
+    items, total = StudentRepository.list_paginated(q=q, sort=sort, limit=limit, offset=offset)
+    items_data = [s.to_dict() for s in items]
+
+    return jsonify({
+        "items": items_data,
+        "total": total,
+        "limit": limit,
+        "offset": offset,
+        # Tương thích ngược với các test cũ
+        "count": len(items_data),
+        "students": items_data,
+    }), 200
+
+
+@api_bp.route("/students/<string:student_id>", methods=["GET"])
+def get_student_detail(student_id: str):
+    student = StudentRepository.get_by_id(student_id)
+    if not student:
+        return error_response("STUDENT_NOT_FOUND", f"Không tìm thấy sinh viên với mã '{student_id}'.", 404)
+    return jsonify({"student": student.to_dict()}), 200
+
+
+@api_bp.route("/students", methods=["POST"])
+def create_student():
+    admin, err = _get_authenticated_admin()
+    if err:
+        return err
+
+    data = request.get_json(silent=True)
+    if not isinstance(data, dict):
+        return error_response("INVALID_JSON", "Body request phải là JSON object.", 400)
+
+    student_id = (data.get("student_id") or "").strip()
+    full_name = (data.get("full_name") or "").strip()
+    subject_id = (data.get("subject_id") or "").strip() or None
+
+    if not student_id or not full_name:
+        return error_response("VALIDATION_ERROR", "Trường student_id và full_name là bắt buộc.", 422)
+
+    # Phân quyền: nếu có subject_id và là giảng viên (ADMIN thường), kiểm tra môn có thuộc giảng viên này không
+    if subject_id and admin.role != "SUPER_ADMIN":
+        subj = Subject.query.filter_by(subject_id=subject_id, deleted_at=None).first()
+        if not subj:
+            return error_response("SUBJECT_NOT_FOUND", f"Không tìm thấy môn học '{subject_id}'.", 404)
+        if subj.instructor_id != admin.admin_id:
+            return error_response("FORBIDDEN", "Giảng viên chỉ có quyền thao tác trên môn học do mình phụ trách.", 403)
+
+    try:
+        student = StudentRepository.create_student(data, subject_id=subject_id)
+        return jsonify({
+            "status": "created",
+            "message": "Tạo sinh viên thành công.",
+            "student": student.to_dict()
+        }), 201
+    except ValueError as ve:
+        return error_response("STUDENT_CONFLICT", str(ve), 409)
+
+
+@api_bp.route("/students/<string:student_id>", methods=["PUT"])
+def update_student(student_id: str):
+    admin, err = _get_authenticated_admin()
+    if err:
+        return err
+
+    data = request.get_json(silent=True)
+    if not isinstance(data, dict):
+        return error_response("INVALID_JSON", "Body request phải là JSON object.", 400)
+
+    student = StudentRepository.get_by_id(student_id)
+    if not student:
+        return error_response("STUDENT_NOT_FOUND", f"Không tìm thấy sinh viên với mã '{student_id}'.", 404)
+
+    # Phân quyền: nếu là giảng viên, kiểm tra sinh viên có thuộc ít nhất một môn của giảng viên này không
+    if admin.role != "SUPER_ADMIN":
+        enrolled_in_my_subjects = (
+            db.session.query(Enrollment)
+            .join(Subject, Enrollment.subject_id == Subject.subject_id)
+            .filter(
+                Enrollment.student_id == student_id,
+                Enrollment.deleted_at.is_(None),
+                Subject.instructor_id == admin.admin_id,
+                Subject.deleted_at.is_(None),
+            )
+            .first()
+        )
+        if not enrolled_in_my_subjects:
+            return error_response("FORBIDDEN", "Giảng viên chỉ được chỉnh sửa sinh viên thuộc lớp học phần mình phụ trách.", 403)
+
+    updated = StudentRepository.update_student(student_id, data)
+    return jsonify({
+        "status": "updated",
+        "message": "Cập nhật thông tin sinh viên thành công.",
+        "student": updated.to_dict()
+    }), 200
+
+
+@api_bp.route("/students/<string:student_id>", methods=["DELETE"])
+def delete_student(student_id: str):
+    admin, err = _get_authenticated_admin()
+    if err:
+        return err
+
+    student = StudentRepository.get_by_id(student_id)
+    if not student:
+        return error_response("STUDENT_NOT_FOUND", f"Không tìm thấy sinh viên với mã '{student_id}'.", 404)
+
+    if admin.role != "SUPER_ADMIN":
+        enrolled_in_my_subjects = (
+            db.session.query(Enrollment)
+            .join(Subject, Enrollment.subject_id == Subject.subject_id)
+            .filter(
+                Enrollment.student_id == student_id,
+                Enrollment.deleted_at.is_(None),
+                Subject.instructor_id == admin.admin_id,
+                Subject.deleted_at.is_(None),
+            )
+            .first()
+        )
+        if not enrolled_in_my_subjects:
+            return error_response("FORBIDDEN", "Giảng viên chỉ được xóa sinh viên thuộc lớp học phần mình phụ trách.", 403)
+
+    StudentRepository.soft_delete_student(student_id)
+    return jsonify({
+        "status": "deleted",
+        "message": f"Đã xóa mềm sinh viên '{student_id}'.",
+        "student_id": student_id,
+    }), 200
+
+
+# ==========================================
+# GĐ 3: API ĐIỂM DANH (POST & GET /attendance)
+# ==========================================
+
+@api_bp.route("/attendance", methods=["POST"])
+def record_attendance():
+    admin, err = _get_authenticated_admin()
+    if err:
+        return err
+
+    data = request.get_json(silent=True)
+    if not isinstance(data, dict):
+        return error_response("INVALID_JSON", "Body request phải là JSON object.", 400)
+
+    student_id = (data.get("student_id") or "").strip()
+    subject_id = (data.get("subject_id") or "").strip()
+    checkin_time = (data.get("checkin_time") or "").strip()
+    checkin_date = (data.get("checkin_date") or "").strip()
+    uuid_str = (data.get("uuid") or "").strip() or None
+
+    if not student_id or not subject_id or not checkin_time or not checkin_date:
+        return error_response(
+            "VALIDATION_ERROR",
+            "Các trường student_id, subject_id, checkin_time và checkin_date là bắt buộc.",
+            422,
+        )
+
+    student = Student.query.filter_by(student_id=student_id, deleted_at=None).first()
+    if not student:
+        return error_response("STUDENT_NOT_FOUND", f"Không tìm thấy sinh viên với mã '{student_id}'.", 404)
+
+    subject = Subject.query.filter_by(subject_id=subject_id, deleted_at=None).first()
+    if not subject:
+        return error_response("SUBJECT_NOT_FOUND", f"Không tìm thấy môn học với mã '{subject_id}'.", 404)
+
+    if admin.role != "SUPER_ADMIN" and subject.instructor_id != admin.admin_id:
+        return error_response("FORBIDDEN", "Môn học này không thuộc quyền phụ trách của giảng viên.", 403)
+
+    enr = Enrollment.query.filter_by(student_id=student_id, subject_id=subject_id, deleted_at=None).first()
+    if not enr:
+        return error_response(
+            "STUDENT_NOT_ENROLLED",
+            f"Sinh viên '{student_id}' chưa ghi danh vào môn học '{subject_id}'.",
+            422,
+        )
+
+    checkin, is_created = CheckinRepository.record_checkin(
+        student_id=student_id,
+        subject_id=subject_id,
+        checkin_time=checkin_time,
+        checkin_date=checkin_date,
+        uuid_str=uuid_str,
+    )
+
+    status_code = 201 if is_created else 200
+    return jsonify({
+        "status": "created" if is_created else "already_exists",
+        "created": is_created,
+        "message": "Ghi nhận điểm danh thành công." if is_created else "Bản ghi điểm danh với uuid này đã tồn tại.",
+        "checkin": checkin.to_dict(),
+    }), status_code
+
+
+@api_bp.route("/attendance", methods=["GET"])
+def list_attendance():
+    subject_id = request.args.get("subject_id")
+    checkin_date = request.args.get("date") or request.args.get("checkin_date")
+    student_id = request.args.get("student_id")
+    limit = max(1, min(request.args.get("limit", 100, type=int), 500))
+    offset = max(0, request.args.get("offset", 0, type=int))
+
+    items, total = CheckinRepository.get_history(
+        subject_id=subject_id,
+        checkin_date=checkin_date,
+        student_id=student_id,
+        limit=limit,
+        offset=offset,
+    )
+
+    items_data = [c.to_dict() for c in items]
+    return jsonify({
+        "items": items_data,
+        "total": total,
+        "limit": limit,
+        "offset": offset,
+        "count": len(items_data),
+        "attendance": items_data,
+    }), 200
+
+
+# ==========================================
+# GĐ 8: CHUẨN HÓA API SUBJECTS & ADMINS
+# ==========================================
 
 @api_bp.route("/subjects", methods=["GET"])
 def list_subjects():
+    limit = max(1, min(request.args.get("limit", 100, type=int), 500))
+    offset = max(0, request.args.get("offset", 0, type=int))
+    q = request.args.get("q")
+    sort = request.args.get("sort")
     instructor_id = request.args.get("instructor_id")
-    if instructor_id:
-        subjects = SubjectRepository.get_by_instructor(instructor_id)
-    else:
-        subjects = Subject.query.filter_by(deleted_at=None).all()
-    return jsonify({"count": len(subjects), "subjects": [s.to_dict() for s in subjects]}), 200
+
+    items, total = SubjectRepository.list_paginated(
+        q=q, sort=sort, limit=limit, offset=offset, instructor_id=instructor_id
+    )
+    items_data = [s.to_dict() for s in items]
+
+    return jsonify({
+        "items": items_data,
+        "total": total,
+        "limit": limit,
+        "offset": offset,
+        "count": len(items_data),
+        "subjects": items_data,
+    }), 200
+
+
+@api_bp.route("/subjects/<string:subject_id>", methods=["GET"])
+def get_subject_detail(subject_id: str):
+    subject = SubjectRepository.get_by_id(subject_id)
+    if not subject:
+        return error_response("SUBJECT_NOT_FOUND", f"Không tìm thấy môn học với mã '{subject_id}'.", 404)
+    return jsonify({"subject": subject.to_dict()}), 200
 
 
 @api_bp.route("/admins", methods=["GET"])
 def list_admins():
-    admins = Admin.query.filter_by(deleted_at=None).all()
-    return jsonify({"count": len(admins), "admins": [a.to_dict(include_password=False) for a in admins]}), 200
+    limit = max(1, min(request.args.get("limit", 100, type=int), 500))
+    offset = max(0, request.args.get("offset", 0, type=int))
+    q = request.args.get("q")
+    sort = request.args.get("sort")
+
+    items, total = AdminRepository.list_paginated(q=q, sort=sort, limit=limit, offset=offset)
+    items_data = [a.to_dict(include_password=False) for a in items]
+
+    return jsonify({
+        "items": items_data,
+        "total": total,
+        "limit": limit,
+        "offset": offset,
+        "count": len(items_data),
+        "admins": items_data,
+    }), 200
+
+
+@api_bp.route("/admins/<string:admin_id>", methods=["GET"])
+def get_admin_detail(admin_id: str):
+    admin = AdminRepository.get_by_id(admin_id)
+    if not admin:
+        return error_response("ADMIN_NOT_FOUND", f"Không tìm thấy tài khoản quản trị viên '{admin_id}'.", 404)
+    return jsonify({"admin": admin.to_dict(include_password=False)}), 200
 
 
 @api_bp.route("/import/csv", methods=["POST"])
@@ -325,12 +617,18 @@ def sync_push():
 
 @api_bp.route("/sync/pull", methods=["GET", "POST"])
 def sync_pull():
+    is_android_since_seq = "since_seq" in request.args
     if request.method == "POST":
         body = request.get_json(silent=True) or {}
-        raw_after_seq = body.get("after_seq", request.args.get("after_seq", 0))
+        if "since_seq" in body:
+            is_android_since_seq = True
+        raw_after_seq = body.get(
+            "after_seq",
+            body.get("since_seq", request.args.get("after_seq", request.args.get("since_seq", 0))),
+        )
         raw_limit = body.get("limit", request.args.get("limit", 100))
     else:
-        raw_after_seq = request.args.get("after_seq", 0)
+        raw_after_seq = request.args.get("after_seq", request.args.get("since_seq", 0))
         raw_limit = request.args.get("limit", 100)
 
     try:
@@ -339,7 +637,7 @@ def sync_pull():
     except (TypeError, ValueError):
         return error_response(
             "INVALID_PARAMS",
-            "Tham số 'after_seq' và 'limit' phải là số nguyên.",
+            "Tham số 'after_seq' (hoặc 'since_seq') và 'limit' phải là số nguyên.",
             400,
         )
 
@@ -350,7 +648,25 @@ def sync_pull():
             400,
         )
 
-    result = SyncRepository.pull_all_changes(after_seq=after_seq, limit=limit)
+    flat_mode = is_android_since_seq or request.args.get("format") == "flat"
+    result = SyncRepository.pull_all_changes(
+        after_seq=after_seq,
+        limit=limit,
+        flat_changes=flat_mode,
+    )
     return jsonify(result), 200
+
+
+@api_bp.route("/sync/status", methods=["GET"])
+def sync_status():
+    return (
+        jsonify(
+            {
+                "status": "ok",
+                "latest_seq": SyncRepository.get_latest_seq(),
+            }
+        ),
+        200,
+    )
 
 
