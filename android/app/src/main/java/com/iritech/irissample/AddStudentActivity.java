@@ -471,6 +471,7 @@ public class AddStudentActivity extends AppCompatActivity {
                 DatabaseHelper.COL_STUDENT_ID + " = ?", new String[]{studentId});
 
         if (rowsAffected > 0) {
+            com.iritech.irissample.sync.worker.SyncWorkScheduler.triggerSyncIfServerMode(this);
             Toast.makeText(this, "Cập nhật thông tin thành công", Toast.LENGTH_SHORT).show();
             setResult(RESULT_OK);
             finish();
@@ -534,6 +535,14 @@ public class AddStudentActivity extends AppCompatActivity {
         }
         cursor.close();
 
+        if (subjectId == null || subjectId.trim().isEmpty()) {
+            com.iritech.irissample.sync.worker.SyncWorkScheduler.triggerSyncIfServerMode(this);
+            Toast.makeText(this, "Thêm sinh viên thành công", Toast.LENGTH_SHORT).show();
+            setResult(RESULT_OK);
+            finish();
+            return;
+        }
+
         // Ghi nhận sinh viên vào bảng Enrollments cho môn học
         ContentValues enrollmentValues = new ContentValues();
         enrollmentValues.put(DatabaseHelper.COL_STUDENT_ID,        studentId);
@@ -542,6 +551,7 @@ public class AddStudentActivity extends AppCompatActivity {
 
         long enrollmentResult = db.insert(DatabaseHelper.TABLE_ENROLLMENTS, null, enrollmentValues);
         if (enrollmentResult != -1) {
+            com.iritech.irissample.sync.worker.SyncWorkScheduler.triggerSyncIfServerMode(this);
             Toast.makeText(this, "Thêm sinh viên thành công", Toast.LENGTH_SHORT).show();
             setResult(RESULT_OK);
             finish();

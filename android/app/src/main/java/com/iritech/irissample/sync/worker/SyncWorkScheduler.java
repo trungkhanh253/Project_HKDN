@@ -1,6 +1,9 @@
 package com.iritech.irissample.sync.worker;
 
+import android.app.Activity;
 import android.content.Context;
+import android.os.Handler;
+import android.os.Looper;
 import android.util.Log;
 import androidx.work.BackoffPolicy;
 import androidx.work.Constraints;
@@ -10,15 +13,22 @@ import androidx.work.NetworkType;
 import androidx.work.OneTimeWorkRequest;
 import androidx.work.PeriodicWorkRequest;
 import androidx.work.WorkManager;
+import com.google.gson.JsonObject;
 import com.iritech.irissample.sync.api.RetrofitSyncApi;
 import com.iritech.irissample.sync.api.SyncApi;
+import com.iritech.irissample.sync.api.SyncApiFactory;
+import com.iritech.irissample.sync.api.SyncApiService;
 import com.iritech.irissample.sync.data.AndroidSyncPrefs;
 import com.iritech.irissample.sync.data.ISyncPrefs;
 import com.iritech.irissample.sync.data.SQLiteSyncRepository;
 import com.iritech.irissample.sync.data.SyncRepository;
 import com.iritech.irissample.sync.manager.SyncManager;
+import com.iritech.irissample.sync.model.SyncResult;
 import com.iritech.irissample.sync.util.AndroidLogger;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
 import java.util.concurrent.TimeUnit;
+import retrofit2.Response;
 
 /**
  * Tiện ích điều phối lịch trình WorkManager cho ứng dụng
@@ -56,6 +66,7 @@ public class SyncWorkScheduler {
         } catch (IllegalStateException ignored) {
 
             Context appCtx = context.getApplicationContext();
+            SyncApiFactory.initialize(appCtx);
 
             // 1. Đọc cấu hình Server Mode, URL và JWT
             ISyncPrefs prefs = new AndroidSyncPrefs(appCtx);
@@ -158,5 +169,98 @@ public class SyncWorkScheduler {
         }
 
         Log.d(TAG, "Đã hủy toàn bộ tác vụ đồng bộ và gửi cờ abortCurrentSync().");
+    }
+
+    private static final long FOREGROUND_POLL_INTERVAL_MS = 30_000L;
+    private static final Handler sMainHandler = new Handler(Looper.getMainLooper());
+    private static final ExecutorService sPollExecutor = Executors.newSingleThreadExecutor();
+    private static Runnable sCurrentPollTask = null;
+
+    /**
+     * Kích hoạt đồng bộ ngay nếu đang ở Server Mode và đã có JWT Token.
+     */
+    public static void triggerSyncIfServerMode(Context context) {
+        if (context == null) return;
+        AndroidSyncPrefs prefs = new AndroidSyncPrefs(context.getApplicationContext());
+        String token = prefs.getAuthToken();
+        if (prefs.isServerMode() && token != null && !token.trim().isEmpty()) {
+            triggerImmediateSync(context.getApplicationContext());
+        }
+    }
+
+    /**
+     * Bắt đầu chu trình đồng bộ tự động khi màn hình đang mở (Task 21):
+     * - Chạy ngay khi mở màn hình (hoặc quay lại sau khi Thêm/Sửa/Xóa).
+     * - Tự động kiểm tra /api/v1/sync/status mỗi 30 giây khi màn hình đang mở.
+     * - Nếu có thay đổi cục bộ (pending > 0) hoặc server có dữ liệu mới (latest_seq > last_seq),
+     *   thực thi sync() và gọi onUiRefresh trên Main Thread để cập nhật danh sách SQLite lên UI.
+     */
+    public static void startForegroundAutoSync(final Activity activity, final Runnable onUiRefresh) {
+        stopForegroundAutoSync();
+        if (activity == null) return;
+        final Context appCtx = activity.getApplicationContext();
+
+        sCurrentPollTask = new Runnable() {
+            @Override
+            public void run() {
+                if (activity.isFinishing() || activity.isDestroyed()) {
+                    return;
+                }
+                sPollExecutor.execute(new Runnable() {
+                    @Override
+                    public void run() {
+                        try {
+                            AndroidSyncPrefs prefs = new AndroidSyncPrefs(appCtx);
+                            String token = prefs.getAuthToken();
+                            if (!prefs.isServerMode() || token == null || token.trim().isEmpty()) {
+                                return;
+                            }
+                            SyncApiFactory.initialize(appCtx);
+                            SQLiteSyncRepository repo = new SQLiteSyncRepository(appCtx);
+                            boolean shouldSync = repo.getPendingCount() > 0 || repo.getLastSeq() == 0;
+
+                            if (!shouldSync) {
+                                try {
+                                    SyncApiService service = SyncApiFactory.createService(prefs);
+                                    Response<JsonObject> resp = service.getSyncStatus().execute();
+                                    if (resp.isSuccessful() && resp.body() != null && resp.body().has("latest_seq")) {
+                                        long latestSeq = resp.body().get("latest_seq").getAsLong();
+                                        if (latestSeq > repo.getLastSeq()) {
+                                            shouldSync = true;
+                                        }
+                                    }
+                                } catch (Exception e) {
+                                    Log.w(TAG, "Không thể kiểm tra /sync/status: " + e.getMessage());
+                                }
+                            }
+
+                            if (shouldSync) {
+                                SyncManager manager = initDefaultSyncManager(appCtx);
+                                SyncResult result = manager.sync();
+                                if (result != null && (result.getPushedCount() > 0 || result.getPulledCount() > 0)) {
+                                    if (onUiRefresh != null && !activity.isFinishing() && !activity.isDestroyed()) {
+                                        activity.runOnUiThread(onUiRefresh);
+                                    }
+                                }
+                            }
+                        } catch (Exception e) {
+                            Log.w(TAG, "Lỗi trong chu trình auto-sync nền: " + e.getMessage());
+                        }
+                    }
+                });
+                sMainHandler.postDelayed(this, FOREGROUND_POLL_INTERVAL_MS);
+            }
+        };
+        sMainHandler.post(sCurrentPollTask);
+    }
+
+    /**
+     * Dừng chu trình tự động kéo 30s khi rời màn hình (onPause).
+     */
+    public static void stopForegroundAutoSync() {
+        if (sCurrentPollTask != null) {
+            sMainHandler.removeCallbacks(sCurrentPollTask);
+            sCurrentPollTask = null;
+        }
     }
 }

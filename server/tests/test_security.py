@@ -44,14 +44,37 @@ def session(api, v1):
 
 
 # ---------- yêu cầu token ----------
-@pytest.mark.parametrize("method,path", [("post", "/sync/push"), ("get", "/sync/pull"),
-                                         ("post", "/import/csv"), ("get", "/jobs/khong-ton-tai")])
+
+@pytest.mark.parametrize("method,path", [
+    ("post", "/sync/push"),
+    ("get", "/sync/pull"),
+    ("get", "/sync/status"),
+    ("post", "/import/csv"),
+    ("get", "/students"),
+    ("get", "/subjects"),
+    ("get", "/admins"),
+    ("get", "/jobs/khong-ton-tai"),
+])
 def test_data_endpoints_require_token(api, v1, method, path):
-    """routes.py hiện không kiểm tra token ở các endpoint này. Bảng admin nằm trong đồng bộ,
-    và import CSV (type=admin) nhận cả cột role, nên không cần đăng nhập vẫn tạo được SUPER_ADMIN."""
     kwargs = {"json": {}} if path == "/sync/push" else {}
-    r = getattr(api, method)(f"{v1}{path}", timeout=10, **kwargs)
-    assert r.status_code in (401, 403), f"HTTP {r.status_code}: endpoint đồng bộ không đòi token"
+
+    r = getattr(api, method)(
+        f"{v1}{path}",
+        timeout=10,
+        **kwargs
+    )
+
+    assert r.status_code == 401, (
+        f"HTTP {r.status_code}: "
+        f"{method.upper()} {path} không yêu cầu JWT"
+    )
+
+# def test_data_endpoints_require_token(api, v1, method, path):
+#     """routes.py hiện không kiểm tra token ở các endpoint này. Bảng admin nằm trong đồng bộ,
+#     và import CSV (type=admin) nhận cả cột role, nên không cần đăng nhập vẫn tạo được SUPER_ADMIN."""
+#     kwargs = {"json": {}} if path == "/sync/push" else {}
+#     r = getattr(api, method)(f"{v1}{path}", timeout=10, **kwargs)
+#     assert r.status_code in (401, 403), f"HTTP {r.status_code}: endpoint đồng bộ không đòi token"
 
 
 # ---------- JWT ----------
@@ -105,3 +128,201 @@ def test_pull_does_not_expose_reset_token(api, v1, session):
         assert all(rec.get("reset_token") != secret for rec in found)
     finally:  # dọn: xóa mềm tài khoản thử
         push(api, v1, hdr, {"admin": [{**base, "updated_at": iso(30), "deleted_at": iso(30)}]})
+
+
+def test_refresh_token_cannot_access_data(api, v1, session):
+    headers = {
+        "Authorization": f"Bearer {session['refresh_token']}"
+    }
+
+    r = api.get(
+        f"{v1}/students",
+        headers=headers,
+        timeout=10
+    )
+
+    assert r.status_code == 401
+
+# ---------- Task 15: Bảo mật API Web ----------
+
+def test_web_students_do_not_expose_sensitive_fields(api, v1, session):
+    """GET /students không được trả mật khẩu điểm danh và dữ liệu khuôn mặt."""
+    headers = {
+        "Authorization": f"Bearer {session['access_token']}"
+    }
+
+    r = api.get(
+        f"{v1}/students",
+        headers=headers,
+        timeout=10
+    )
+
+    assert r.status_code == 200, r.text
+
+    data = r.json()
+    assert "students" in data
+
+    for student in data["students"]:
+        assert "checkin_password" not in student
+        assert "face_embedding" not in student
+
+
+def test_web_admins_do_not_expose_sensitive_fields(api, v1, session):
+    """GET /admins không được trả thông tin xác thực nhạy cảm."""
+    headers = {
+        "Authorization": f"Bearer {session['access_token']}"
+    }
+
+    r = api.get(
+        f"{v1}/admins",
+        headers=headers,
+        timeout=10
+    )
+
+    assert r.status_code == 200, r.text
+
+    data = r.json()
+    assert "admins" in data
+
+    sensitive_fields = {
+        "password",
+        "reset_token",
+        "expire_at",
+        "face_embedding",
+    }
+
+    for admin in data["admins"]:
+        assert sensitive_fields.isdisjoint(admin.keys())
+
+
+def test_cors_allows_configured_origin(api, v1):
+    """Frontend được cấu hình phải vượt qua CORS preflight."""
+    r = api.options(
+        f"{v1}/auth/login",
+        headers={
+            "Origin": "http://localhost:5173",
+            "Access-Control-Request-Method": "POST",
+            "Access-Control-Request-Headers": "content-type,authorization",
+        },
+        timeout=10,
+    )
+
+    assert r.status_code == 200
+    assert (
+        r.headers.get("Access-Control-Allow-Origin")
+        == "http://localhost:5173"
+    )
+
+    allowed_headers = r.headers.get(
+        "Access-Control-Allow-Headers", ""
+    ).lower()
+
+    assert "authorization" in allowed_headers
+    assert "content-type" in allowed_headers
+
+
+def test_cors_rejects_unknown_origin(api, v1):
+    """Origin không nằm trong danh sách cho phép không được cấp quyền CORS."""
+    r = api.options(
+        f"{v1}/auth/login",
+        headers={
+            "Origin": "http://untrusted.example:5173",
+            "Access-Control-Request-Method": "POST",
+        },
+        timeout=10,
+    )
+
+    assert "Access-Control-Allow-Origin" not in r.headers
+
+def test_sync_serialization_does_not_expose_sensitive_fields():
+    from app.repositories.sync_repository import SyncRepository
+
+    class FakeRow:
+        def to_dict(self):
+            return {
+                "student_id": "SV001",
+                "full_name": "Test Student",
+                "password": "secret",
+                "reset_token": "secret",
+                "expire_at": 123456,
+                "checkin_password": "123456",
+                "face_embedding": [0.1, 0.2],
+            }
+
+    result = SyncRepository._to_safe_dict(FakeRow())
+
+    sensitive_fields = (
+        "password",
+        "reset_token",
+        "expire_at",
+        "checkin_password",
+        "face_embedding",
+    )
+
+    for field in sensitive_fields:
+        assert field not in result
+
+    assert result["student_id"] == "SV001"
+    assert result["full_name"] == "Test Student"
+
+@pytest.mark.parametrize("flat_mode", [False, True])
+def test_sync_pull_response_has_no_sensitive_fields(
+    api, v1, session, flat_mode
+):
+    headers = {
+        "Authorization": f"Bearer {session['access_token']}"
+    }
+
+    params = {
+        "after_seq": 0,
+        "limit": 100,
+    }
+
+    if flat_mode:
+        params["format"] = "flat"
+
+    response = api.get(
+        f"{v1}/sync/pull",
+        headers=headers,
+        params=params,
+        timeout=10,
+    )
+
+    assert response.status_code == 200
+
+    data = response.json()
+    changes = data.get("changes", {})
+
+    if isinstance(changes, dict):
+        record_count = sum(
+            len(records)
+            for records in changes.values()
+        )
+    else:
+        record_count = len(changes)
+
+    assert record_count > 0, (
+        f"Sync Pull returned no records: flat_mode={flat_mode}"
+    )
+
+    sensitive_fields = {
+        "password",
+        "reset_token",
+        "expire_at",
+        "checkin_password",
+        "face_embedding",
+    }
+
+    def check_sensitive_fields(obj):
+        if isinstance(obj, dict):
+            for key, value in obj.items():
+                assert key not in sensitive_fields, (
+                    f"Sensitive field leaked: {key}"
+                )
+                check_sensitive_fields(value)
+
+        elif isinstance(obj, list):
+            for item in obj:
+                check_sensitive_fields(item)
+
+    check_sensitive_fields(changes)

@@ -43,7 +43,14 @@ services:
       - TEST_DATABASE_URL=postgresql://${POSTGRES_USER:-postgres}:${POSTGRES_PASSWORD:-kiet2201}@postgres:5432/attendance_test
       - TEST_BASE_URL=http://localhost:5000
       - REDIS_URL=${REDIS_URL:-redis://redis:6379/0}
-      - SECRET_KEY=${SECRET_KEY:-hkdn-default-secret-key-2026}
+      - SECRET_KEY=${SECRET_KEY:?SECRET_KEY is required}
+      - CORS_ORIGINS=${CORS_ORIGINS:-}
+      - SMTP_HOST=${SMTP_HOST:-smtp-relay.brevo.com}
+      - SMTP_PORT=${SMTP_PORT:-587}
+      - SMTP_USERNAME=${SMTP_USERNAME:-}
+      - SMTP_PASSWORD=${SMTP_PASSWORD:-}
+      - MAIL_FROM=${MAIL_FROM:-}
+      - RESET_TOKEN_TTL_SECONDS=${RESET_TOKEN_TTL_SECONDS:-120}
     depends_on:
       postgres:
         condition: service_healthy
@@ -63,7 +70,7 @@ services:
       - TEST_DATABASE_URL=postgresql://${POSTGRES_USER:-postgres}:${POSTGRES_PASSWORD:-kiet2201}@postgres:5432/attendance_test
       - TEST_BASE_URL=http://localhost:5000
       - REDIS_URL=${REDIS_URL:-redis://redis:6379/0}
-      - SECRET_KEY=${SECRET_KEY:-hkdn-default-secret-key-2026}
+      - SECRET_KEY=${SECRET_KEY:?SECRET_KEY is required}
     depends_on:
       postgres:
         condition: service_healthy

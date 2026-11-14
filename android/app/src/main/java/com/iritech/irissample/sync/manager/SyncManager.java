@@ -209,18 +209,7 @@ public class SyncManager {
                         return abortResult;
                     }
 
-                    List<SyncChange> pendingChanges = new ArrayList<>();
-
-                    List<SyncChange> allPending =
-                            repository.getPendingChanges(BATCH_SIZE);
-
-                    if (allPending != null) {
-                        for (SyncChange change : allPending) {
-                            if ("students".equals(change.getTableName())) {
-                                pendingChanges.add(change);
-                            }
-                        }
-                    }
+                    List<SyncChange> pendingChanges = repository.getPendingChanges(BATCH_SIZE);
                     if (pendingChanges == null || pendingChanges.isEmpty()) {
                         hasMorePending = false;
                         break;
@@ -346,7 +335,7 @@ public class SyncManager {
         } catch (SyncApiException e) {
             logger.e(TAG, "Lỗi SyncApiException (HTTP " + e.getHttpCode() + "): " + e.getMessage(), e);
 
-            if (!lastAttemptedBatchIds.isEmpty() && (e.isClientValidationError() || e.getHttpCode() == 422)) {
+            if (!lastAttemptedBatchIds.isEmpty() && (e.isClientValidationError() || e.getHttpCode() == 422 || e.getHttpCode() == 403)) {
                 logger.w(TAG, "Lỗi 4xx cả lô request, tăng retry_count cho " + lastAttemptedBatchIds.size() + " bản ghi trong lô.");
                 repository.recordBatchFailure(lastAttemptedBatchIds, "HTTP " + e.getHttpCode() + ": " + e.getMessage());
             }

@@ -1,15 +1,52 @@
 from app import db
 from app.models import Subject
 from app.repositories.base_repository import BaseRepository
+import sqlalchemy as sa
 
 class SubjectRepository(BaseRepository):
     @staticmethod
-    def get_by_id(subject_id: str):
-        return Subject.query.filter_by(subject_id=subject_id, deleted_at=None).first()
+    def get_by_id(subject_id: str, include_deleted: bool = False):
+        query = Subject.query.filter_by(subject_id=subject_id)
+        if not include_deleted:
+            query = query.filter(Subject.deleted_at.is_(None))
+        return query.first()
 
     @staticmethod
     def get_by_instructor(instructor_id: str):
         return Subject.query.filter_by(instructor_id=instructor_id, deleted_at=None).all()
+
+    @staticmethod
+    def list_paginated(q: str = None, sort: str = None, limit: int = 10, offset: int = 0, instructor_id: str = None):
+        query = Subject.query.filter(Subject.deleted_at.is_(None))
+        if instructor_id:
+            query = query.filter(Subject.instructor_id == instructor_id)
+
+        if q and q.strip():
+            kw = f"%{q.strip()}%"
+            query = query.filter(
+                sa.or_(
+                    Subject.subject_id.ilike(kw),
+                    Subject.subject_name.ilike(kw),
+                    Subject.time_slot.ilike(kw),
+                )
+            )
+
+        total = query.count()
+
+        if sort:
+            parts = sort.split(":")
+            field_name = parts[0].strip().lower()
+            order_dir = parts[1].strip().lower() if len(parts) > 1 else "asc"
+            col = getattr(Subject, field_name, None)
+            if col is not None:
+                query = query.order_by(col.desc() if order_dir == "desc" else col.asc())
+            else:
+                query = query.order_by(Subject.subject_id.asc())
+        else:
+            query = query.order_by(Subject.subject_id.asc())
+
+        items = query.offset(offset).limit(limit).all()
+        return items, total
 
     @staticmethod
     def create(subject_data: dict):

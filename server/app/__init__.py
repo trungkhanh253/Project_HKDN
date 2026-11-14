@@ -2,6 +2,7 @@ import os
 from pathlib import Path
 import yaml
 from flask import Flask, Response, jsonify
+from flask_cors import CORS
 from flask_sqlalchemy import SQLAlchemy
 from flask_migrate import Migrate
 from werkzeug.exceptions import HTTPException
@@ -64,11 +65,35 @@ def create_app():
 
     app.config["SQLALCHEMY_DATABASE_URI"] = database_url
     app.config["SQLALCHEMY_TRACK_MODIFICATIONS"] = False
-    app.config["SECRET_KEY"] = os.getenv("SECRET_KEY", "hkdn-default-secret-key-2026")
+    secret_key = os.getenv("SECRET_KEY", "").strip()
+
+    if not secret_key or secret_key == "hkdn-default-secret-key-2026":
+        raise RuntimeError("SECRET_KEY chưa được cấu hình an toàn.")
+
+    app.config["SECRET_KEY"] = secret_key
+
+    # CORS - Cho phép nhóm Web truy cập Flask API
+    cors_origins = [
+        origin.strip()
+        for origin in os.getenv("CORS_ORIGINS", "").split(",")
+        if origin.strip()
+    ]
+
+    CORS(
+        app,
+        resources={
+            r"/*": {
+                "origins": cors_origins,
+            }
+        },
+        methods=["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
+        allow_headers=["Content-Type", "Authorization"],
+        supports_credentials=False,
+    )
 
     db.init_app(app)
 
-    migrate.init_app(app, db)   
+    migrate.init_app(app, db)  
 
     # Import models để Flask-Migrate / Alembic nhận diện đầy đủ 6 bảng
     from app import models  # noqa: F401
@@ -77,6 +102,10 @@ def create_app():
     # Đăng ký blueprint ở cả /api/v1 (chuẩn có version) và gốc / (tương thích ngược)
     app.register_blueprint(api_bp, url_prefix="/api/v1")
     app.register_blueprint(api_bp, name="api_root", url_prefix="")
+
+    from app.checkins import bp as checkins_bp
+    app.register_blueprint(checkins_bp, url_prefix="/api/v1")
+    app.register_blueprint(checkins_bp, name="checkins_root", url_prefix="")
 
     @app.route("/openapi.yml", methods=["GET"])
     @app.route("/api/v1/openapi.yml", methods=["GET"])
@@ -212,13 +241,13 @@ def create_app():
         ).scalar()
         print(f"[3] Kiểu dữ liệu face_embedding: {vec_type}")
 
-    # API kiểm tra Flask Server
-        @app.get("/health")
-        def health():
-            return {
-                "status": "ok",
-                "service": "attendance-server"
-            }, 200
+
+    @app.get("/health")
+    def health():
+        return {
+            "status": "ok",
+            "service": "attendance-server"
+        }, 200        
         
          
 
