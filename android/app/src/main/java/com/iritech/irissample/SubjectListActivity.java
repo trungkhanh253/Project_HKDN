@@ -129,6 +129,15 @@ public class SubjectListActivity extends AppCompatActivity {
      * Load danh sách môn học từ database (phân quyền theo role)
      */
     private void loadSubjects() {
+        if (currentUserEmail != null) {
+            String dbAdminId = dbHelper.getAdminIdByEmail(currentUserEmail);
+            String dbRole = dbHelper.getAdminRole(currentUserEmail);
+            if (dbAdminId != null) currentAdminId = dbAdminId;
+            if (dbRole != null) {
+                currentRole = dbRole;
+                isSuperAdmin = "SUPER_ADMIN".equals(currentRole);
+            }
+        }
         allSubjectList.clear();
         subjectList.clear();
 
@@ -465,6 +474,13 @@ public class SubjectListActivity extends AppCompatActivity {
     protected void onResume() {
         super.onResume();
         loadSubjects();
+        com.iritech.irissample.sync.worker.SyncWorkScheduler.startForegroundAutoSync(this, this::loadSubjects);
+    }
+
+    @Override
+    protected void onPause() {
+        super.onPause();
+        com.iritech.irissample.sync.worker.SyncWorkScheduler.stopForegroundAutoSync();
     }
 
     /**

@@ -195,6 +195,7 @@ public class AddSubjectActivity extends AppCompatActivity {
                 success = dbHelper.updateSubjectByAdmin(id, currentAdminId, name, timeSlot);
             }
             if (success) {
+                com.iritech.irissample.sync.worker.SyncWorkScheduler.triggerSyncIfServerMode(this);
                 Toast.makeText(this, "Cập nhật môn học thành công!", Toast.LENGTH_SHORT).show();
                 finish();
             } else {
@@ -204,6 +205,7 @@ public class AddSubjectActivity extends AppCompatActivity {
             // Chế độ thêm mới
             long result = dbHelper.createSubject(id, name, timeSlot, currentAdminId, instructorId);
             if (result != -1) {
+                com.iritech.irissample.sync.worker.SyncWorkScheduler.triggerSyncIfServerMode(this);
                 Toast.makeText(this, "Thêm môn học thành công!", Toast.LENGTH_SHORT).show();
                 finish();
             } else {

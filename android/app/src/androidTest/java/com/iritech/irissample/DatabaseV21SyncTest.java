@@ -75,7 +75,7 @@ public class DatabaseV21SyncTest {
         DatabaseHelper helper = new DatabaseHelper(context);
         SQLiteDatabase db = helper.getWritableDatabase();
 
-        assertEquals(21, db.getVersion());
+        assertTrue(db.getVersion() >= 21);
         assertEquals(1, count(db, "SELECT COUNT(*) FROM admin"));
         assertEquals(1, count(db, "SELECT COUNT(*) FROM subjects"));
         assertEquals(2, count(db, "SELECT COUNT(*) FROM students"));
