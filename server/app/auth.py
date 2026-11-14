@@ -6,6 +6,8 @@ import os
 import time
 from functools import wraps
 from flask import current_app, request, jsonify, g
+import uuid
+from redis.exceptions import RedisError
 
 ACCESS_TOKEN_EXPIRES = 3600          # 1 giờ
 REFRESH_TOKEN_EXPIRES = 7 * 86400    # 7 ngày
@@ -60,13 +62,14 @@ def create_jwt_token(admin_id: str, email: str, role: str, token_type: str = "ac
     now = int(time.time())
     header = {"alg": "HS256", "typ": "JWT"}
     payload = {
-        "sub": admin_id,
-        "email": email,
-        "role": role,
-        "type": token_type,
-        "iat": now,
-        "exp": now + expires_in,
-    }
+    "sub": admin_id,
+    "email": email,
+    "role": role,
+    "type": token_type,
+    "jti": str(uuid.uuid4()),
+    "iat": now,
+    "exp": now + expires_in,
+}
 
     header_b64 = _b64url_encode(json.dumps(header, separators=(",", ":")).encode("utf-8"))
     payload_b64 = _b64url_encode(json.dumps(payload, separators=(",", ":")).encode("utf-8"))
@@ -120,6 +123,12 @@ def decode_jwt_token(token: str, expected_type: str = None) -> dict:
     if expected_type and payload.get("type") != expected_type:
         raise ValueError(f"Yêu cầu loại token '{expected_type}'.")
 
+    # Kiểm tra JWT có bị thu hồi trong Redis không
+    from app.services.token_revocation_service import is_token_revoked
+
+    if is_token_revoked(token):
+        raise ValueError("Token đã bị thu hồi. Vui lòng đăng nhập lại.")
+
     return payload
 
 
@@ -148,11 +157,18 @@ def require_auth(func):
                 token,
                 expected_type="access"
             )
+
         except (ValueError, TypeError, OverflowError):
             return jsonify({
                 "error": "INVALID_TOKEN",
-                "message": "Token không hợp lệ hoặc đã hết hạn."
+                "message": "Token không hợp lệ, đã hết hạn hoặc đã bị thu hồi."
             }), 401
+
+        except RedisError:
+            return jsonify({
+                "error": "AUTH_SERVICE_UNAVAILABLE",
+                "message": "Dịch vụ xác thực tạm thời không khả dụng."
+            }), 503
 
         admin_id = payload.get("sub")
 

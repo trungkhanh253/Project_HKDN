@@ -7,6 +7,15 @@ from sqlalchemy.exc import IntegrityError, DataError
 from flask import Blueprint, jsonify, request, g
 from app.models import Admin, Subject, Student
 from app.permissions import filter_accessible
+from app.services.password_reset_service import create_password_reset_token
+from app.services.email_service import send_password_reset_email
+from app.services.password_reset_service import reset_password
+from flask import current_app
+from redis.exceptions import RedisError
+from app.services.token_revocation_service import (
+    revoke_token,
+    is_token_revoked,
+)
 
 from app import db
 from app.auth import (
@@ -22,6 +31,10 @@ from app.repositories.subject_repository import SubjectRepository
 from app.repositories.sync_repository import SyncRepository
 from app.tasks import process_csv_import
 from app.permissions import PermissionDenied
+import re
+import uuid
+
+from app.auth import hash_password_sha256
 
 api_bp = Blueprint("api_v1", __name__)
 
@@ -47,6 +60,191 @@ def _get_redis_conn():
 def health_check():
     return jsonify({"status": "healthy"}), 200
 
+@api_bp.route("/auth/register", methods=["POST"])
+@require_auth
+def auth_register():
+    # Chỉ SUPER_ADMIN được đăng ký tài khoản
+    if g.current_admin.role != "SUPER_ADMIN":
+        return error_response(
+            "FORBIDDEN",
+            "Chỉ SUPER_ADMIN mới được tạo tài khoản.",
+            403,
+        )
+
+    data = request.get_json(silent=True)
+
+    if not isinstance(data, dict):
+        return error_response(
+            "INVALID_JSON",
+            "Body phải là JSON hợp lệ.",
+            400,
+        )
+
+    fields = (
+        "email",
+        "password",
+        "confirm_password",
+        "full_name",
+        "admin_code",
+    )
+
+    for field in fields:
+        if not isinstance(data.get(field), str) or not data[field].strip():
+            return error_response(
+                "VALIDATION_ERROR",
+                f"Trường '{field}' không được để trống.",
+                422,
+            )
+
+    email = data["email"].strip().lower()
+    password = data["password"]
+    confirm_password = data["confirm_password"]
+    full_name = data["full_name"].strip()
+    admin_code = data["admin_code"].strip()
+
+    if not re.fullmatch(r"[^@\s]+@[^@\s]+\.[^@\s]+", email):
+        return error_response(
+            "INVALID_EMAIL",
+            "Email không hợp lệ.",
+            422,
+        )
+
+    if len(password) < 6:
+        return error_response(
+            "INVALID_PASSWORD",
+            "Mật khẩu phải có ít nhất 6 ký tự.",
+            422,
+        )
+
+    if password != confirm_password:
+        return error_response(
+            "PASSWORD_MISMATCH",
+            "Mật khẩu xác nhận không khớp.",
+            422,
+        )
+
+    if Admin.query.filter_by(email=email).first():
+        return error_response(
+            "EMAIL_EXISTS",
+            "Email đã tồn tại.",
+            409,
+        )
+
+    if Admin.query.filter_by(admin_code=admin_code).first():
+        return error_response(
+            "ADMIN_CODE_EXISTS",
+            "Mã giảng viên đã tồn tại.",
+            409,
+        )
+
+    admin = Admin(
+        admin_id="ADM_" + uuid.uuid4().hex[:12].upper(),
+        uuid=str(uuid.uuid4()),
+        email=email,
+        password=hash_password_sha256(password),
+        full_name=full_name,
+        admin_code=admin_code,
+        date_of_birth=data.get("date_of_birth"),
+        phone=data.get("phone"),
+        gender=data.get("gender"),
+        role="ADMIN",
+    )
+
+    try:
+        db.session.add(admin)
+        db.session.commit()
+    except IntegrityError:
+        db.session.rollback()
+        return error_response(
+            "REGISTER_CONFLICT",
+            "Email hoặc mã giảng viên đã tồn tại.",
+            409,
+        )
+
+    return jsonify({
+        "message": "Đăng ký tài khoản thành công.",
+        "admin": {
+            "admin_id": admin.admin_id,
+            "email": admin.email,
+            "full_name": admin.full_name,
+            "admin_code": admin.admin_code,
+            "role": admin.role,
+        },
+    }), 201
+
+@api_bp.route("/auth/change-password", methods=["POST"])
+@require_auth
+def auth_change_password():
+    data = request.get_json(silent=True)
+
+    if not isinstance(data, dict):
+        return error_response(
+            "INVALID_JSON",
+            "Body phải là JSON hợp lệ.",
+            400,
+        )
+
+    old_password = data.get("old_password")
+    new_password = data.get("new_password")
+    confirm_password = data.get("confirm_password")
+
+    if not all(
+        isinstance(value, str) and value
+        for value in (
+            old_password,
+            new_password,
+            confirm_password,
+        )
+    ):
+        return error_response(
+            "VALIDATION_ERROR",
+            "Vui lòng nhập đầy đủ mật khẩu cũ, mật khẩu mới và xác nhận mật khẩu.",
+            422,
+        )
+
+    if not verify_password(old_password, g.current_admin.password):
+        return error_response(
+            "INVALID_OLD_PASSWORD",
+            "Mật khẩu cũ không chính xác.",
+            400,
+        )
+
+    if len(new_password) < 6:
+        return error_response(
+            "INVALID_PASSWORD",
+            "Mật khẩu mới phải có ít nhất 6 ký tự.",
+            422,
+        )
+
+    if new_password != confirm_password:
+        return error_response(
+            "PASSWORD_MISMATCH",
+            "Mật khẩu xác nhận không khớp.",
+            422,
+        )
+
+    if verify_password(new_password, g.current_admin.password):
+        return error_response(
+            "SAME_PASSWORD",
+            "Mật khẩu mới phải khác mật khẩu cũ.",
+            422,
+        )
+
+    g.current_admin.password = hash_password_sha256(new_password)
+
+    try:
+        db.session.commit()
+    except Exception:
+        db.session.rollback()
+        return error_response(
+            "UPDATE_FAILED",
+            "Không thể cập nhật mật khẩu.",
+            500,
+        )
+
+    return jsonify({
+        "message": "Đổi mật khẩu thành công. Vui lòng đăng nhập lại."
+    }), 200
 
 @api_bp.route("/auth/login", methods=["POST"])
 def auth_login():
@@ -118,6 +316,68 @@ def auth_login():
     )
 
 
+@api_bp.route("/auth/logout", methods=["POST"])
+def auth_logout():
+    access_token = extract_bearer_token()
+
+    if not access_token:
+        return error_response(
+            "MISSING_TOKEN",
+            "Thiếu Access Token trong Authorization header.",
+            401,
+        )
+
+    data = request.get_json(silent=True)
+    refresh_token = data.get("refresh_token") if isinstance(data, dict) else None
+
+    if not isinstance(refresh_token, str) or not refresh_token.strip():
+        return error_response(
+            "MISSING_REFRESH_TOKEN",
+            "Vui lòng cung cấp Refresh Token.",
+            400,
+        )
+
+    try:
+        access_payload = decode_jwt_token(
+            access_token,
+            expected_type="access",
+        )
+
+        refresh_payload = decode_jwt_token(
+            refresh_token,
+            expected_type="refresh",
+        )
+
+        if access_payload["sub"] != refresh_payload["sub"]:
+            return error_response(
+                "TOKEN_MISMATCH",
+                "Access Token và Refresh Token không thuộc cùng tài khoản.",
+                401,
+            )
+
+        # Thu hồi cả Access Token và Refresh Token
+        revoke_token(access_token, access_payload)
+        revoke_token(refresh_token, refresh_payload)
+
+    except ValueError:
+        return error_response(
+            "INVALID_TOKEN",
+            "Token không hợp lệ, đã hết hạn hoặc đã bị thu hồi.",
+            401,
+        )
+
+    except RedisError:
+        return error_response(
+            "AUTH_SERVICE_UNAVAILABLE",
+            "Không thể xác nhận trạng thái phiên đăng nhập. Vui lòng thử lại.",
+            503,
+        )
+
+    return jsonify({
+        "message": "Đăng xuất thành công."
+    }), 200
+
+
 @api_bp.route("/auth/refresh", methods=["POST"])
 def auth_refresh():
     token = extract_bearer_token()
@@ -138,8 +398,20 @@ def auth_refresh():
             token,
             expected_type="refresh"
         )
+
     except ValueError as exc:
-        return error_response("INVALID_TOKEN", str(exc), 401)
+        return error_response(
+            "INVALID_TOKEN",
+            str(exc),
+            401
+        )
+
+    except RedisError:
+        return error_response(
+            "AUTH_SERVICE_UNAVAILABLE",
+            "Dịch vụ xác thực tạm thời không khả dụng.",
+            503
+        )
 
     new_access_token = create_jwt_token(
         admin_id=payload.get("sub", ""),
@@ -170,9 +442,24 @@ def auth_me():
             401,
         )
     try:
-        payload = decode_jwt_token(token)
+        payload = decode_jwt_token(
+            token,
+            expected_type="access"
+        )
+
     except ValueError as exc:
-        return error_response("INVALID_TOKEN", str(exc), 401)
+        return error_response(
+            "INVALID_TOKEN",
+            str(exc),
+            401
+        )
+
+    except RedisError:
+        return error_response(
+            "AUTH_SERVICE_UNAVAILABLE",
+            "Dịch vụ xác thực tạm thời không khả dụng.",
+            503
+        )
 
     admin_id = payload.get("sub")
     admin = Admin.query.filter_by(admin_id=admin_id, deleted_at=None).first()
@@ -445,3 +732,120 @@ def handle_permission_denied(error):
         str(error),
         403
     )
+
+
+@api_bp.route("/auth/forgot-password", methods=["POST"])
+def auth_forgot_password():
+    data = request.get_json(silent=True)
+
+    if not isinstance(data, dict):
+        return error_response(
+            "INVALID_JSON",
+            "Dữ liệu JSON không hợp lệ.",
+            400
+        )
+
+    email = data.get("email")
+
+    if not isinstance(email, str) or not email.strip():
+        return error_response(
+            "VALIDATION_ERROR",
+            "Email không được để trống.",
+            422
+        )
+
+    email = email.strip().lower()
+
+    # Không tiết lộ email có tồn tại trong hệ thống hay không.
+    success_response = {
+        "message": (
+            "Nếu email tồn tại trong hệ thống, "
+            "hướng dẫn đặt lại mật khẩu sẽ được gửi."
+        )
+    }
+
+    try:
+        token = create_password_reset_token(email)
+
+        if token is not None:
+            send_password_reset_email(email, token)
+
+    except Exception:
+        # Không ghi token hoặc thông tin nhạy cảm vào log.
+        current_app.logger.exception(
+            "Password reset request failed"
+        )
+
+        return error_response(
+            "RESET_REQUEST_FAILED",
+            "Không thể xử lý yêu cầu lúc này.",
+            503
+        )
+
+    return jsonify(success_response), 200
+
+
+@api_bp.route("/auth/reset-password", methods=["POST"])
+def auth_reset_password():
+    data = request.get_json(silent=True)
+
+    if not isinstance(data, dict):
+        return error_response(
+            "INVALID_JSON",
+            "Dữ liệu JSON không hợp lệ.",
+            400
+        )
+
+    email = data.get("email")
+    token = data.get("token")
+    new_password = data.get("new_password")
+    confirm_password = data.get("confirm_password")
+
+    if not all(
+        isinstance(value, str) and value.strip()
+        for value in [email, token, new_password, confirm_password]
+    ):
+        return error_response(
+            "VALIDATION_ERROR",
+            "Vui lòng nhập đầy đủ thông tin.",
+            422
+        )
+
+    email = email.strip().lower()
+
+    if len(new_password) < 6:
+        return error_response(
+            "INVALID_PASSWORD",
+            "Mật khẩu mới phải có ít nhất 6 ký tự.",
+            422
+        )
+
+    if new_password != confirm_password:
+        return error_response(
+            "PASSWORD_MISMATCH",
+            "Mật khẩu xác nhận không khớp.",
+            422
+        )
+
+    try:
+        success = reset_password(email, token, new_password)
+
+        if not success:
+            return error_response(
+                "INVALID_RESET_TOKEN",
+                "Token không hợp lệ hoặc đã hết hạn.",
+                400
+            )
+
+    except Exception:
+        db.session.rollback()
+        current_app.logger.exception("Password reset failed")
+        return error_response(
+            "RESET_FAILED",
+            "Không thể đặt lại mật khẩu lúc này.",
+            500
+        )
+
+    return jsonify({
+        "message": "Đặt lại mật khẩu thành công. Vui lòng đăng nhập lại."
+    }), 200
