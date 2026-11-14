@@ -35,21 +35,23 @@ info:
        }
        ```
 
-        ### Phần bổ sung cho nhóm Web (v1.1.0)
-        - Endpoint có `x-status: implemented` đã chạy trên server. Endpoint có `x-status: planned` là **hợp đồng đã chốt**, server đang làm; nhóm Web có thể viết code gọi theo đúng đặc tả này.
-        - **Backend trước:** nhóm Web gọi API thật. Nếu cần mock tạm thì mock phải trả đúng cấu trúc trong file này, sau đó chỉ đổi base URL.
-        - **Danh sách phân trang:** mọi `GET` danh sách trả `{ "items": [...], "total": n, "limit": n, "offset": n }`. Tham số chung: `limit` (mặc định 50, tối đa 500), `offset`, `q` (tìm kiếm), `sort` (tên trường, thêm dấu `-` phía trước để giảm dần, ví dụ `-updated_at`).
-        - **Xóa:** mọi `DELETE` là xóa mềm (`deleted_at`), trả `204`. Bản ghi bị xóa không xuất hiện trong danh sách; app Android nhận được thay đổi qua `/sync/pull`.
-        - **Phân quyền:** `SUPER_ADMIN` thấy và sửa toàn bộ. `ADMIN` (giảng viên) chỉ thao tác trên môn có `instructor_id` là mình và sinh viên, ghi danh, điểm danh, email của các môn đó. Truy cập ngoài phạm vi trả `403 FORBIDDEN`.
-        - **Dữ liệu nhạy cảm:** API dành cho Web **không bao giờ** trả `password`, `reset_token`, `expire_at`, `checkin_password`, `face_embedding`. Các trường này chỉ nằm trong `/sync/*` dành cho app Android.
-        - **CORS:** server cho phép origin của web theo cấu hình `CORS_ORIGINS`.
-        - **Mật khẩu:** web gửi mật khẩu thường qua HTTPS, server tự băm SHA-256 như hiện tại.
-        - **Thời gian:** `date-time` theo ISO-8601 (UTC). `checkin_date` dạng `YYYY-MM-DD`, `checkin_time` dạng `HH:MM:SS`.
+    ### Phần bổ sung cho nhóm Web (v1.1.0)
+    - Endpoint có `x-status: implemented` đã chạy trên server. Endpoint có `x-status: planned` là **hợp đồng đã chốt**, server đang làm; nhóm Web có thể viết code gọi theo đúng đặc tả này.
+    - **Backend trước:** nhóm Web gọi API thật. Nếu cần mock tạm thì mock phải trả đúng cấu trúc trong file này, sau đó chỉ đổi base URL.
+    - **Danh sách phân trang:** mọi `GET` danh sách trả `{ "items": [...], "total": n, "limit": n, "offset": n }`. Tham số chung: `limit` (mặc định 50, tối đa 500), `offset`, `q` (tìm kiếm), `sort` (tên trường, thêm dấu `-` phía trước để giảm dần, ví dụ `-updated_at`).
+    - **Xóa:** mọi `DELETE` là xóa mềm (`deleted_at`), trả `204`. Bản ghi bị xóa không xuất hiện trong danh sách; app Android nhận được thay đổi qua `/sync/pull`.
+    - **Phân quyền:** `SUPER_ADMIN` thấy và sửa toàn bộ. `ADMIN` (giảng viên) chỉ thao tác trên môn có `instructor_id` là mình và sinh viên, ghi danh, điểm danh, email của các môn đó. Truy cập ngoài phạm vi trả `403 FORBIDDEN`.
+    - **Dữ liệu nhạy cảm:** API dành cho Web **không bao giờ** trả `password`, `reset_token`, `expire_at`, `checkin_password`, `face_embedding`. Các trường này chỉ nằm trong `/sync/*` dành cho app Android.
+    - **CORS:** server cho phép origin của web theo cấu hình `CORS_ORIGINS`.
+    - **Mật khẩu:** web gửi mật khẩu thường qua HTTPS, server tự băm SHA-256 như hiện tại.
+    - **Thời gian:** `date-time` theo ISO-8601 (UTC). `checkin_date` dạng `YYYY-MM-DD`, `checkin_time` dạng `HH:MM:SS`.
 servers:
 - url: http://localhost:5000/api/v1
   description: Local Development Server (v1)
 - url: http://localhost:5000
   description: Root Alias (tương thích ngược cho /health)
+- url: http://192.168.1.250:5000/api/v1
+  description: Máy chủ test dùng chung trong mạng LAN (IP có thể đổi, Nhóm 1 sẽ báo khi đổi)
 tags:
 - name: System
 - name: Authentication
@@ -795,11 +797,22 @@ components:
           default: true
     EmailRecipientList:
       type: object
+      required:
+      - items
+      - total
+      - limit
+      - offset
       properties:
         items:
           type: array
           items:
             $ref: '#/components/schemas/EmailRecipientRecord'
+        total:
+          type: integer
+        limit:
+          type: integer
+        offset:
+          type: integer
   parameters:
     Limit:
       name: limit
@@ -1873,6 +1886,9 @@ paths:
       description: Tùy chọn (ưu tiên thấp).
       x-status: planned
       security: *id012
+      parameters:
+      - $ref: '#/components/parameters/Limit'
+      - $ref: '#/components/parameters/Offset'
       responses:
         '200':
           description: Thành công

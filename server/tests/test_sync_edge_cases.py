@@ -125,9 +125,9 @@ def test_same_student_id_from_two_devices_is_merged_into_one_row(api, v1, hdr, c
     assert len(found) == 1 and found[0]["full_name"] == "May B"
 
 
-@pytest.mark.xfail(strict=False, reason=(
-    "Khi gộp theo mã sinh viên, _apply_fields ghi đè uuid của bản ghi cũ bằng uuid máy sau; "
-    "máy đầu mất liên kết. Cần Lead chốt: giữ uuid nào làm chuẩn."))
+# @pytest.mark.xfail(strict=False, reason=(
+#     "Khi gộp theo mã sinh viên, _apply_fields ghi đè uuid của bản ghi cũ bằng uuid máy sau; "
+#     "máy đầu mất liên kết. Cần Lead chốt: giữ uuid nào làm chuẩn."))
 def test_merge_keeps_first_uuid(api, v1, hdr, cursor):
     s, u1, u2 = new_sid(), new_uuid(), new_uuid()
     push(api, v1, hdr, {"students": [student(s, u1, name="May A", ts=iso(0))]})

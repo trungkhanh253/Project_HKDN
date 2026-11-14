@@ -685,6 +685,9 @@ public class LoginActivity extends AppCompatActivity {
                         buttonLogin.setEnabled(true);
                         buttonLogin.setText("Đăng nhập");
 
+                        dbHelper.enqueueAllForSync();
+                        com.iritech.irissample.sync.worker.SyncWorkScheduler.triggerSyncIfServerMode(LoginActivity.this);
+
                         goToMain();
                     }
 

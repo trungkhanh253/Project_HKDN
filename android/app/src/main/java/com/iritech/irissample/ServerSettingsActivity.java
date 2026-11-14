@@ -78,6 +78,7 @@ public class ServerSettingsActivity extends AppCompatActivity {
 
         radioServer.setOnClickListener(v -> {
             prefs.setServerMode(true);
+            new DatabaseHelper(this).enqueueAllForSync();
 
             Toast.makeText(
                     this,
@@ -153,6 +154,7 @@ public class ServerSettingsActivity extends AppCompatActivity {
             txtSyncStatus.setText("Đang gửi yêu cầu đồng bộ...");
 
             try {
+                new DatabaseHelper(this).enqueueAllForSync();
                 SyncWorkScheduler.triggerImmediateSync(
                         getApplicationContext()
                 );
