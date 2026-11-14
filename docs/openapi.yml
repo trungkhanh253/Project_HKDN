@@ -1,7 +1,7 @@
 openapi: 3.0.3
 info:
   title: API Hệ thống Điểm danh Sinh trắc học (Project_HKDN)
-  version: 1.0.0
+  version: 1.1.0
   description: |
     Tài liệu đặc tả RESTful API cho hệ thống Điểm danh Sinh trắc học Khuôn mặt (Project_HKDN).
 
@@ -35,75 +35,100 @@ info:
        }
        ```
 
+    ### Phần bổ sung cho nhóm Web (v1.1.0)
+    - Endpoint có `x-status: implemented` đã chạy trên server. Endpoint có `x-status: planned` là **hợp đồng đã chốt**, server đang làm; nhóm Web có thể viết code gọi theo đúng đặc tả này.
+    - **Backend trước:** nhóm Web gọi API thật. Nếu cần mock tạm thì mock phải trả đúng cấu trúc trong file này, sau đó chỉ đổi base URL.
+    - **Danh sách phân trang:** mọi `GET` danh sách trả `{ "items": [...], "total": n, "limit": n, "offset": n }`. Tham số chung: `limit` (mặc định 50, tối đa 500), `offset`, `q` (tìm kiếm), `sort` (tên trường, thêm dấu `-` phía trước để giảm dần, ví dụ `-updated_at`).
+    - **Xóa:** mọi `DELETE` là xóa mềm (`deleted_at`), trả `204`. Bản ghi bị xóa không xuất hiện trong danh sách; app Android nhận được thay đổi qua `/sync/pull`.
+    - **Phân quyền:** `SUPER_ADMIN` thấy và sửa toàn bộ. `ADMIN` (giảng viên) chỉ thao tác trên môn có `instructor_id` là mình và sinh viên, ghi danh, điểm danh, email của các môn đó. Truy cập ngoài phạm vi trả `403 FORBIDDEN`.
+    - **Dữ liệu nhạy cảm:** API dành cho Web **không bao giờ** trả `password`, `reset_token`, `expire_at`, `checkin_password`, `face_embedding`. Các trường này chỉ nằm trong `/sync/*` dành cho app Android.
+    - **CORS:** server cho phép origin của web theo cấu hình `CORS_ORIGINS`.
+    - **Mật khẩu:** web gửi mật khẩu thường qua HTTPS, server tự băm SHA-256 như hiện tại.
+    - **Thời gian:** `date-time` theo ISO-8601 (UTC). `checkin_date` dạng `YYYY-MM-DD`, `checkin_time` dạng `HH:MM:SS`.
 servers:
-  - url: http://localhost:5000/api/v1
-    description: Local Development Server (v1)
-  - url: http://localhost:5000
-    description: Root Alias (tương thích ngược cho /health)
-
+- url: http://localhost:5000/api/v1
+  description: Local Development Server (v1)
+- url: http://localhost:5000
+  description: Root Alias (tương thích ngược cho /health)
+- url: http://192.168.1.250:5000/api/v1
+  description: Máy chủ test dùng chung trong mạng LAN (IP có thể đổi, Nhóm 1 sẽ báo khi đổi)
+tags:
+- name: System
+- name: Authentication
+  description: Đăng nhập, làm mới token, quên và đổi mật khẩu.
+- name: Students
+  description: Quản lý sinh viên (xóa mềm).
+- name: Subjects
+  description: Môn học, ghi danh sinh viên vào môn.
+- name: Attendance
+  description: Điểm danh và thống kê.
+- name: Admins
+  description: Tài khoản quản trị viên / giảng viên.
+- name: Email Reports
+  description: Danh sách người nhận và gửi báo cáo điểm danh (ưu tiên thấp).
+- name: CSV Import & Background Jobs
+- name: Synchronization
 components:
   securitySchemes:
     BearerAuth:
       type: http
       scheme: bearer
       bearerFormat: JWT
-      description: "Nhập JWT token theo cú pháp: `Bearer <token>`"
-
+      description: 'Nhập JWT token theo cú pháp: `Bearer <token>`'
   schemas:
     ErrorResponse:
       type: object
       required:
-        - error
+      - error
       properties:
         error:
           type: object
           required:
-            - code
-            - message
+          - code
+          - message
           properties:
             code:
               type: string
-              example: "VALIDATION_ERROR"
+              example: VALIDATION_ERROR
             message:
               type: string
-              example: "Dữ liệu đầu vào không hợp lệ."
+              example: Dữ liệu đầu vào không hợp lệ.
             details:
               type: object
               nullable: true
-
     AdminRecord:
       type: object
       required:
-        - admin_id
-        - email
-        - full_name
+      - admin_id
+      - email
+      - full_name
       properties:
         admin_id:
           type: string
-          example: "ADM_001"
+          example: ADM_001
         email:
           type: string
           format: email
-          example: "lecturer@hkdn.edu.vn"
+          example: lecturer@hkdn.edu.vn
         password:
           type: string
-          description: "Mật khẩu dạng plain-text hoặc SHA-256 hex (chỉ gửi khi tạo/đổi mật khẩu)"
-          example: "lecturer123"
+          description: Mật khẩu dạng plain-text hoặc SHA-256 hex (chỉ gửi khi tạo/đổi mật khẩu)
+          example: lecturer123
         full_name:
           type: string
-          example: "Nguyễn Văn Giảng"
+          example: Nguyễn Văn Giảng
         date_of_birth:
           type: string
           nullable: true
-          example: "1985-05-15"
+          example: '1985-05-15'
         phone:
           type: string
           nullable: true
-          example: "0909876543"
+          example: 0909876543
         gender:
           type: string
           nullable: true
-          example: "Nam"
+          example: Nam
         photo_path:
           type: string
           nullable: true
@@ -112,12 +137,14 @@ components:
           nullable: true
         role:
           type: string
-          enum: [SUPER_ADMIN, ADMIN]
+          enum:
+          - SUPER_ADMIN
+          - ADMIN
           default: ADMIN
         admin_code:
           type: string
           nullable: true
-          example: "GV001"
+          example: GV001
         is_first_login:
           type: integer
           default: 1
@@ -132,15 +159,15 @@ components:
             format: float
           minItems: 192
           maxItems: 192
-          description: "Vector đặc trưng khuôn mặt đúng 192 chiều (MobileFaceNet)"
+          description: Vector đặc trưng khuôn mặt đúng 192 chiều (MobileFaceNet)
         uuid:
           type: string
           format: uuid
-          example: "00000000-0000-4000-8000-000000000002"
+          example: 00000000-0000-4000-8000-000000000002
         updated_at:
           type: string
           format: date-time
-          example: "2026-11-09T10:00:00Z"
+          example: '2026-11-09T10:00:00Z'
         deleted_at:
           type: string
           format: date-time
@@ -150,57 +177,57 @@ components:
           type: integer
           readOnly: true
           example: 1
-
     SubjectRecord:
       type: object
       required:
-        - subject_id
-        - subject_name
+      - subject_id
+      - subject_name
       properties:
-        subject_id:
+        subject_id: &id005
           type: string
-          example: "IT001"
-        subject_name:
+          example: IT001
+        subject_name: &id006
           type: string
-          example: "Nhập môn Lập trình"
-        time_slot:
+          example: Nhập môn Lập trình
+        time_slot: &id007
           type: string
           nullable: true
-          example: "Thứ 2 (07:30 - 09:30)"
+          example: Thứ 2 (07:30 - 09:30)
         created_by:
           type: string
           nullable: true
-          description: "FK trỏ tới admin.admin_id"
-          example: "SADM_001"
-        instructor_id:
+          description: FK trỏ tới admin.admin_id
+          example: SADM_001
+        instructor_id: &id008
           type: string
           nullable: true
-          description: "FK trỏ tới admin.admin_id"
-          example: "ADM_001"
-        subject_status:
+          description: Giảng viên phụ trách (FK admin.admin_id). ADMIN tạo môn thì server tự gán là chính
+            họ.
+          example: ADM_001
+        subject_status: &id009
           type: string
-          default: "ASSIGNED"
-          example: "ASSIGNED"
+          default: ASSIGNED
+          example: ASSIGNED
         created_at:
           type: string
           nullable: true
-          example: "2026-09-01T08:00:00"
-        semester_start_date:
+          example: '2026-09-01T08:00:00'
+        semester_start_date: &id010
           type: string
           nullable: true
-          example: "01/09/2026"
-        semester_end_date:
+          example: 01/09/2026
+        semester_end_date: &id011
           type: string
           nullable: true
-          example: "30/11/2026"
+          example: 30/11/2026
         uuid:
           type: string
           format: uuid
-          example: "11111111-2222-4333-8444-555555555555"
+          example: 11111111-2222-4333-8444-555555555555
         updated_at:
           type: string
           format: date-time
-          example: "2026-11-09T10:05:00Z"
+          example: '2026-11-09T10:05:00Z'
         deleted_at:
           type: string
           format: date-time
@@ -210,34 +237,33 @@ components:
           type: integer
           readOnly: true
           example: 2
-
     StudentRecord:
       type: object
       required:
-        - student_id
+      - student_id
       properties:
         student_id:
           type: string
-          example: "SV2026001"
+          example: SV2026001
         full_name:
           type: string
           nullable: true
-          example: "Trần Thị B"
+          example: Trần Thị B
         email:
           type: string
           nullable: true
-          example: "sv001@student.edu.vn"
+          example: sv001@student.edu.vn
         phone:
           type: string
           nullable: true
-          example: "0912345678"
+          example: 0912345678
         photo_path:
           type: string
           nullable: true
         checkin_password:
           type: string
           nullable: true
-          example: "1234"
+          example: '1234'
         face_embedding:
           type: array
           nullable: true
@@ -249,11 +275,11 @@ components:
         uuid:
           type: string
           format: uuid
-          example: "22222222-3333-4444-8555-666666666666"
+          example: 22222222-3333-4444-8555-666666666666
         updated_at:
           type: string
           format: date-time
-          example: "2026-11-09T10:10:00Z"
+          example: '2026-11-09T10:10:00Z'
         deleted_at:
           type: string
           format: date-time
@@ -263,31 +289,30 @@ components:
           type: integer
           readOnly: true
           example: 3
-
     EnrollmentRecord:
       type: object
       required:
-        - student_id
-        - subject_id
+      - student_id
+      - subject_id
       properties:
         student_id:
           type: string
-          example: "SV2026001"
+          example: SV2026001
         subject_id:
           type: string
-          example: "IT001"
+          example: IT001
         enrollment_status:
           type: string
           nullable: true
-          example: "Enrolled"
+          example: Enrolled
         uuid:
           type: string
           format: uuid
-          example: "33333333-4444-4555-8666-777777777777"
+          example: 33333333-4444-4555-8666-777777777777
         updated_at:
           type: string
           format: date-time
-          example: "2026-11-09T10:15:00Z"
+          example: '2026-11-09T10:15:00Z'
         deleted_at:
           type: string
           format: date-time
@@ -297,36 +322,35 @@ components:
           type: integer
           readOnly: true
           example: 4
-
     CheckinHistoryRecord:
       type: object
       required:
-        - student_id
-        - subject_id
+      - student_id
+      - subject_id
       properties:
         checkin_id:
           type: integer
           example: 1
         student_id:
           type: string
-          example: "SV2026001"
+          example: SV2026001
         subject_id:
           type: string
-          example: "IT001"
+          example: IT001
         checkin_time:
           type: string
-          example: "07:35:12"
+          example: 07:35:12
         checkin_date:
           type: string
-          example: "2026-11-09"
+          example: '2026-11-09'
         uuid:
           type: string
           format: uuid
-          example: "44444444-5555-4666-8777-888888888888"
+          example: 44444444-5555-4666-8777-888888888888
         updated_at:
           type: string
           format: date-time
-          example: "2026-11-09T10:20:00Z"
+          example: '2026-11-09T10:20:00Z'
         deleted_at:
           type: string
           format: date-time
@@ -336,42 +360,41 @@ components:
           type: integer
           readOnly: true
           example: 5
-
     EmailRecipientRecord:
       type: object
       required:
-        - subject_id
-        - email_address
+      - subject_id
+      - email_address
       properties:
         email_id:
           type: integer
           example: 1
         subject_id:
           type: string
-          example: "IT001"
+          example: IT001
         email_address:
           type: string
           format: email
-          example: "academic_affairs@hkdn.edu.vn"
+          example: academic_affairs@hkdn.edu.vn
         recipient_name:
           type: string
           nullable: true
-          example: "Phòng Đào Tạo"
+          example: Phòng Đào Tạo
         added_date:
           type: string
           nullable: true
-          example: "2026-11-01"
+          example: '2026-11-01'
         is_selected:
           type: boolean
           default: true
         uuid:
           type: string
           format: uuid
-          example: "55555555-6666-4777-8888-999999999999"
+          example: 55555555-6666-4777-8888-999999999999
         updated_at:
           type: string
           format: date-time
-          example: "2026-11-09T10:25:00Z"
+          example: '2026-11-09T10:25:00Z'
         deleted_at:
           type: string
           format: date-time
@@ -381,11 +404,500 @@ components:
           type: integer
           readOnly: true
           example: 6
-
+    AdminPublic:
+      type: object
+      required:
+      - admin_id
+      - email
+      - full_name
+      properties:
+        admin_id:
+          type: string
+          example: ADM_001
+        email:
+          type: string
+          format: email
+          example: lecturer@hkdn.edu.vn
+        full_name:
+          type: string
+          example: Nguyễn Văn Giảng
+        date_of_birth:
+          type: string
+          nullable: true
+          example: '1985-05-15'
+        phone:
+          type: string
+          nullable: true
+          example: 0909876543
+        gender:
+          type: string
+          nullable: true
+          example: Nam
+        photo_path:
+          type: string
+          nullable: true
+        description:
+          type: string
+          nullable: true
+        role:
+          type: string
+          enum:
+          - SUPER_ADMIN
+          - ADMIN
+          default: ADMIN
+        admin_code:
+          type: string
+          nullable: true
+          example: GV001
+        is_first_login:
+          type: integer
+          default: 1
+        has_iris:
+          type: integer
+          default: 0
+        uuid:
+          type: string
+          format: uuid
+          example: 00000000-0000-4000-8000-000000000002
+        updated_at:
+          type: string
+          format: date-time
+          example: '2026-11-09T10:00:00Z'
+          readOnly: true
+        deleted_at:
+          type: string
+          format: date-time
+          nullable: true
+          example: null
+        seq:
+          type: integer
+          readOnly: true
+          example: 1
+      description: Thông tin tài khoản dành cho Web (không có mật khẩu, token, vector khuôn mặt).
+    StudentPublic:
+      type: object
+      required:
+      - student_id
+      properties:
+        student_id:
+          type: string
+          example: SV2026001
+        full_name:
+          type: string
+          nullable: true
+          example: Trần Thị B
+        email:
+          type: string
+          nullable: true
+          example: sv001@student.edu.vn
+        phone:
+          type: string
+          nullable: true
+          example: 0912345678
+        photo_path:
+          type: string
+          nullable: true
+        uuid:
+          type: string
+          format: uuid
+          example: 22222222-3333-4444-8555-666666666666
+        updated_at:
+          type: string
+          format: date-time
+          example: '2026-11-09T10:10:00Z'
+          readOnly: true
+        deleted_at:
+          type: string
+          format: date-time
+          nullable: true
+          example: null
+        seq:
+          type: integer
+          readOnly: true
+          example: 3
+      description: Thông tin sinh viên dành cho Web (không có mật khẩu điểm danh, vector khuôn mặt).
+    StudentList:
+      type: object
+      required:
+      - items
+      - total
+      - limit
+      - offset
+      properties:
+        items:
+          type: array
+          items:
+            $ref: '#/components/schemas/StudentPublic'
+        total:
+          type: integer
+          description: Tổng số bản ghi khớp bộ lọc (chưa phân trang)
+          example: 125
+        limit:
+          type: integer
+          example: 50
+        offset:
+          type: integer
+          example: 0
+    SubjectList:
+      type: object
+      required:
+      - items
+      - total
+      - limit
+      - offset
+      properties:
+        items:
+          type: array
+          items:
+            $ref: '#/components/schemas/SubjectRecord'
+        total:
+          type: integer
+          description: Tổng số bản ghi khớp bộ lọc (chưa phân trang)
+          example: 125
+        limit:
+          type: integer
+          example: 50
+        offset:
+          type: integer
+          example: 0
+    AdminList:
+      type: object
+      required:
+      - items
+      - total
+      - limit
+      - offset
+      properties:
+        items:
+          type: array
+          items:
+            $ref: '#/components/schemas/AdminPublic'
+        total:
+          type: integer
+          description: Tổng số bản ghi khớp bộ lọc (chưa phân trang)
+          example: 125
+        limit:
+          type: integer
+          example: 50
+        offset:
+          type: integer
+          example: 0
+    StudentCreate:
+      type: object
+      required:
+      - student_id
+      - full_name
+      properties:
+        student_id:
+          type: string
+          example: SV2026001
+        full_name: &id001
+          type: string
+          example: Trần Thị B
+        email: &id002
+          type: string
+          nullable: true
+          example: sv001@student.edu.vn
+        phone: &id003
+          type: string
+          nullable: true
+          example: 0912345678
+        checkin_password: &id004
+          type: string
+          nullable: true
+          description: Mật khẩu điểm danh dự phòng (chỉ gửi lên, không bao giờ trả về)
+        subject_id:
+          type: string
+          nullable: true
+          description: Nếu có, tự ghi danh sinh viên vào môn này
+          example: IT001
+    StudentUpdate:
+      type: object
+      description: Chỉ cập nhật các trường được gửi.
+      properties:
+        full_name: *id001
+        email: *id002
+        phone: *id003
+        checkin_password: *id004
+    SubjectInput:
+      type: object
+      required:
+      - subject_id
+      - subject_name
+      properties:
+        subject_id: *id005
+        subject_name: *id006
+        time_slot: *id007
+        instructor_id: *id008
+        subject_status: *id009
+        semester_start_date: *id010
+        semester_end_date: *id011
+    SubjectUpdate:
+      type: object
+      description: Chỉ cập nhật các trường được gửi.
+      properties:
+        subject_name: *id006
+        time_slot: *id007
+        instructor_id: *id008
+        subject_status: *id009
+        semester_start_date: *id010
+        semester_end_date: *id011
+    EnrolledStudent:
+      allOf:
+      - $ref: '#/components/schemas/StudentPublic'
+      - type: object
+        properties:
+          enrollment_status:
+            type: string
+            nullable: true
+            example: Enrolled
+    EnrolledStudentList:
+      type: object
+      required:
+      - items
+      - total
+      - limit
+      - offset
+      properties:
+        items:
+          type: array
+          items:
+            $ref: '#/components/schemas/EnrolledStudent'
+        total:
+          type: integer
+          description: Tổng số bản ghi khớp bộ lọc (chưa phân trang)
+          example: 125
+        limit:
+          type: integer
+          example: 50
+        offset:
+          type: integer
+          example: 0
+    EnrollmentCreate:
+      type: object
+      required:
+      - student_id
+      properties:
+        student_id:
+          type: string
+          example: SV2026001
+        enrollment_status:
+          type: string
+          nullable: true
+          example: Enrolled
+    CheckinWithStudent:
+      allOf:
+      - $ref: '#/components/schemas/CheckinHistoryRecord'
+      - type: object
+        properties:
+          student_name:
+            type: string
+            nullable: true
+            example: Trần Thị B
+    CheckinList:
+      type: object
+      required:
+      - items
+      - total
+      - limit
+      - offset
+      properties:
+        items:
+          type: array
+          items:
+            $ref: '#/components/schemas/CheckinWithStudent'
+        total:
+          type: integer
+          description: Tổng số bản ghi khớp bộ lọc (chưa phân trang)
+          example: 125
+        limit:
+          type: integer
+          example: 50
+        offset:
+          type: integer
+          example: 0
+    AttendanceCreate:
+      type: object
+      required:
+      - student_id
+      - subject_id
+      - uuid
+      properties:
+        student_id:
+          type: string
+          example: SV2026001
+        subject_id:
+          type: string
+          example: IT001
+        checkin_date:
+          type: string
+          example: '2026-11-14'
+          description: Mặc định là ngày hiện tại của server
+        checkin_time:
+          type: string
+          example: 07:35:12
+          description: Mặc định là giờ hiện tại của server
+        uuid:
+          type: string
+          format: uuid
+          description: Gửi lặp cùng uuid không tạo bản ghi trùng (idempotent)
+        device_id:
+          type: string
+          nullable: true
+          example: android-emulator-01
+    AttendanceSummary:
+      type: object
+      properties:
+        subject_id:
+          type: string
+          example: IT001
+        total_sessions:
+          type: integer
+          description: Số buổi = số ngày `checkin_date` khác nhau có ít nhất một lượt điểm danh của môn
+            trong khoảng lọc
+          example: 12
+        items:
+          type: array
+          items:
+            type: object
+            properties:
+              student_id:
+                type: string
+                example: SV2026001
+              full_name:
+                type: string
+                nullable: true
+                example: Trần Thị B
+              present_count:
+                type: integer
+                example: 10
+              absent_count:
+                type: integer
+                example: 2
+              attendance_rate:
+                type: number
+                format: float
+                description: present_count / total_sessions (0 đến 1)
+                example: 0.83
+    EmailRecipientInput:
+      type: object
+      required:
+      - email_address
+      properties:
+        email_address:
+          type: string
+          format: email
+          example: academic_affairs@hkdn.edu.vn
+        recipient_name:
+          type: string
+          nullable: true
+          example: Phòng Đào Tạo
+        is_selected:
+          type: boolean
+          default: true
+    EmailRecipientList:
+      type: object
+      required:
+      - items
+      - total
+      - limit
+      - offset
+      properties:
+        items:
+          type: array
+          items:
+            $ref: '#/components/schemas/EmailRecipientRecord'
+        total:
+          type: integer
+        limit:
+          type: integer
+        offset:
+          type: integer
+  parameters:
+    Limit:
+      name: limit
+      in: query
+      schema:
+        type: integer
+        default: 50
+        minimum: 1
+        maximum: 500
+    Offset:
+      name: offset
+      in: query
+      schema:
+        type: integer
+        default: 0
+        minimum: 0
+    Q:
+      name: q
+      in: query
+      description: Từ khóa tìm kiếm (không phân biệt hoa thường) trên các trường văn bản chính của bản
+        ghi
+      schema:
+        type: string
+    Sort:
+      name: sort
+      in: query
+      description: Tên trường để sắp xếp; thêm `-` phía trước để giảm dần. Ví dụ `full_name`, `-updated_at`
+      schema:
+        type: string
+  responses:
+    Unauthorized:
+      description: Thiếu hoặc sai token (`MISSING_TOKEN`, `INVALID_TOKEN`, token hết hạn)
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+          example:
+            error:
+              code: INVALID_TOKEN
+              message: Chữ ký JWT không hợp lệ.
+    Forbidden:
+      description: Không đủ quyền với tài nguyên này (ví dụ ADMIN truy cập môn của giảng viên khác)
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+          example:
+            error:
+              code: FORBIDDEN
+              message: Bạn không có quyền truy cập môn học này.
+    NotFound:
+      description: Không tìm thấy bản ghi (hoặc đã bị xóa mềm)
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+          example:
+            error:
+              code: NOT_FOUND
+              message: Không tìm thấy sinh viên.
+    Conflict:
+      description: Xung đột dữ liệu (trùng khóa nghiệp vụ)
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+          example:
+            error:
+              code: CONFLICT
+              message: Mã sinh viên đã tồn tại.
+    ValidationError:
+      description: Dữ liệu gửi lên không hợp lệ
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+          example:
+            error:
+              code: VALIDATION_ERROR
+              message: Dữ liệu đầu vào không hợp lệ.
 paths:
   /health:
     get:
-      tags: [System]
+      tags:
+      - System
       summary: Kiểm tra trạng thái hoạt động của Server
       responses:
         '200':
@@ -397,13 +909,14 @@ paths:
                 properties:
                   status:
                     type: string
-                    example: "healthy"
+                    example: healthy
               example:
-                status: "healthy"
-
+                status: healthy
+      x-status: implemented
   /auth/login:
     post:
-      tags: [Authentication]
+      tags:
+      - Authentication
       summary: Đăng nhập tài khoản Admin / Giảng viên để nhận JWT Token
       description: |
         Xác thực bằng `email` (hoặc `username` / `admin_id`) và `password`.
@@ -415,36 +928,36 @@ paths:
             schema:
               type: object
               required:
-                - password
+              - password
               properties:
                 email:
                   type: string
-                  example: "admin@hkdn.edu.vn"
+                  example: admin@hkdn.edu.vn
                 username:
                   type: string
-                  description: "Tùy chọn thay thế cho email (có thể truyền email, admin_id hoặc admin_code)"
+                  description: Tùy chọn thay thế cho email (có thể truyền email, admin_id hoặc admin_code)
                 password:
                   type: string
-                  example: "admin123"
+                  example: admin123
             example:
-              email: "admin@hkdn.edu.vn"
-              password: "admin123"
+              email: admin@hkdn.edu.vn
+              password: admin123
       responses:
         '200':
           description: Đăng nhập thành công
           content:
             application/json:
               example:
-                access_token: "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9..."
-                refresh_token: "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9..."
-                token_type: "Bearer"
+                access_token: eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9...
+                refresh_token: eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9...
+                token_type: Bearer
                 expires_in: 3600
                 admin:
-                  admin_id: "SADM_001"
-                  uuid: "00000000-0000-4000-8000-000000000001"
-                  email: "admin@hkdn.edu.vn"
-                  full_name: "Quản Trị Viên Hệ Thống (Super Admin)"
-                  role: "SUPER_ADMIN"
+                  admin_id: SADM_001
+                  uuid: 00000000-0000-4000-8000-000000000001
+                  email: admin@hkdn.edu.vn
+                  full_name: Quản Trị Viên Hệ Thống (Super Admin)
+                  role: SUPER_ADMIN
                   is_first_login: 0
         '401':
           description: Sai thông tin đăng nhập
@@ -454,21 +967,22 @@ paths:
                 $ref: '#/components/schemas/ErrorResponse'
               example:
                 error:
-                  code: "INVALID_CREDENTIALS"
-                  message: "Email hoặc mật khẩu không chính xác."
+                  code: INVALID_CREDENTIALS
+                  message: Email hoặc mật khẩu không chính xác.
         '422':
           description: Thiếu trường email hoặc password
           content:
             application/json:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
-
+      x-status: implemented
   /auth/refresh:
     post:
-      tags: [Authentication]
+      tags:
+      - Authentication
       summary: Làm mới Access Token bằng Refresh Token
       security:
-        - BearerAuth: []
+      - BearerAuth: []
       responses:
         '200':
           description: Cấp lại access_token mới thành công
@@ -481,13 +995,13 @@ paths:
                     type: string
                   token_type:
                     type: string
-                    example: "Bearer"
+                    example: Bearer
                   expires_in:
                     type: integer
                     example: 3600
               example:
-                access_token: "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9..."
-                token_type: "Bearer"
+                access_token: eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9...
+                token_type: Bearer
                 expires_in: 3600
         '401':
           description: Thiếu token hoặc token không hợp lệ / đã hết hạn
@@ -497,12 +1011,1025 @@ paths:
                 $ref: '#/components/schemas/ErrorResponse'
               example:
                 error:
-                  code: "INVALID_TOKEN"
-                  message: "Chữ ký JWT không hợp lệ."
-
+                  code: INVALID_TOKEN
+                  message: Chữ ký JWT không hợp lệ.
+      description: 'Gửi refresh token trong header `Authorization: Bearer <refresh_token>` **hoặc** trong
+        body `{ "refresh_token": "..." }` (server nhận cả hai). Access token sống 1 giờ, refresh token
+        7 ngày.'
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                refresh_token:
+                  type: string
+      x-status: implemented
+  /auth/me:
+    get:
+      tags:
+      - Authentication
+      summary: Lấy thông tin tài khoản đang đăng nhập
+      description: Dùng khi web tải lại trang để biết token còn hiệu lực và vai trò (`role`) của người
+        dùng.
+      x-status: implemented
+      security: &id012
+      - BearerAuth: []
+      responses:
+        '200':
+          description: Thành công
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  admin:
+                    $ref: '#/components/schemas/AdminPublic'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+  /auth/logout:
+    post:
+      tags:
+      - Authentication
+      summary: Đăng xuất và thu hồi refresh token
+      description: Body có thể gửi `refresh_token` (nếu web lưu trong body). Nếu web dùng HttpOnly cookie,
+        server tự đọc cookie và xóa cookie.
+      x-status: planned
+      security: *id012
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                refresh_token:
+                  type: string
+      responses:
+        '200':
+          description: Đã đăng xuất
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  message:
+                    type: string
+                    example: Đăng xuất thành công.
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+  /auth/forgot-password:
+    post:
+      tags:
+      - Authentication
+      summary: Yêu cầu mã đặt lại mật khẩu
+      description: Gửi mã đặt lại mật khẩu về email. Luôn trả `200` với cùng một thông báo dù email có
+        tồn tại hay không, để không lộ danh sách tài khoản. Mã có hiệu lực **120 giây** (cùng quy tắc
+        với app Android).
+      x-status: planned
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+              - email
+              properties:
+                email:
+                  type: string
+                  format: email
+                  example: lecturer@hkdn.edu.vn
+      responses:
+        '200':
+          description: Đã nhận yêu cầu
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  message:
+                    type: string
+                    example: Nếu email tồn tại, mã đặt lại mật khẩu đã được gửi.
+                  expires_in:
+                    type: integer
+                    example: 120
+        '422':
+          $ref: '#/components/responses/ValidationError'
+  /auth/reset-password:
+    post:
+      tags:
+      - Authentication
+      summary: Đặt lại mật khẩu bằng mã nhận qua email
+      x-status: planned
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+              - email
+              - reset_token
+              - new_password
+              properties:
+                email:
+                  type: string
+                  format: email
+                reset_token:
+                  type: string
+                new_password: &id013
+                  type: string
+                  minLength: 6
+                  example: MatKhauMoi@123
+      responses:
+        '200':
+          description: Đổi mật khẩu thành công
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  message:
+                    type: string
+                    example: Đặt lại mật khẩu thành công.
+        '400':
+          description: Mã sai hoặc đã hết hạn
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+              example:
+                error:
+                  code: INVALID_RESET_TOKEN
+                  message: Mã đặt lại mật khẩu không đúng hoặc đã hết hạn.
+        '422':
+          $ref: '#/components/responses/ValidationError'
+  /auth/change-password:
+    post:
+      tags:
+      - Authentication
+      summary: Đổi mật khẩu khi đã đăng nhập
+      description: Dùng cả cho đổi mật khẩu lần đầu. Thành công thì `is_first_login` chuyển về `0`.
+      x-status: planned
+      security: *id012
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+              - current_password
+              - new_password
+              properties:
+                current_password:
+                  type: string
+                new_password: *id013
+      responses:
+        '200':
+          description: Đổi mật khẩu thành công
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  message:
+                    type: string
+                    example: Đổi mật khẩu thành công.
+        '400':
+          description: Mật khẩu hiện tại sai
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+              example:
+                error:
+                  code: WRONG_CURRENT_PASSWORD
+                  message: Mật khẩu hiện tại không chính xác.
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '422':
+          $ref: '#/components/responses/ValidationError'
+  /auth/register:
+    post:
+      tags:
+      - Authentication
+      summary: Tạo tài khoản admin / giảng viên
+      description: '**Chỉ `SUPER_ADMIN`.** Tương ứng màn hình đăng ký admin trên app. Mật khẩu ban đầu
+        bắt buộc đổi ở lần đăng nhập đầu (`is_first_login = 1`).'
+      x-status: planned
+      security: *id012
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+              - email
+              - password
+              - full_name
+              properties:
+                email:
+                  type: string
+                  format: email
+                password: *id013
+                full_name:
+                  type: string
+                admin_id:
+                  type: string
+                  example: ADM_002
+                admin_code:
+                  type: string
+                  nullable: true
+                phone:
+                  type: string
+                  nullable: true
+                role:
+                  type: string
+                  enum:
+                  - ADMIN
+                  - SUPER_ADMIN
+                  default: ADMIN
+      responses:
+        '201':
+          description: Đã tạo tài khoản
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AdminPublic'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '409':
+          $ref: '#/components/responses/Conflict'
+        '422':
+          $ref: '#/components/responses/ValidationError'
+  /students:
+    get:
+      tags:
+      - Students
+      summary: Danh sách sinh viên
+      description: '`q` tìm theo `student_id`, `full_name`, `email`, `phone`. `sort` hợp lệ: `student_id`,
+        `full_name`, `updated_at`. ADMIN chỉ thấy sinh viên đã ghi danh vào môn của mình.'
+      x-status: planned
+      security: *id012
+      parameters: &id020
+      - &id015
+        $ref: '#/components/parameters/Limit'
+      - &id016
+        $ref: '#/components/parameters/Offset'
+      - &id017
+        $ref: '#/components/parameters/Q'
+      - &id018
+        $ref: '#/components/parameters/Sort'
+      responses:
+        '200':
+          description: Thành công
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/StudentList'
+              example:
+                items:
+                - student_id: SV2026001
+                  full_name: Trần Thị B
+                  email: sv001@student.edu.vn
+                  phone: 0912345678
+                  photo_path: null
+                  uuid: 22222222-3333-4444-8555-666666666666
+                  updated_at: '2026-11-09T10:10:00Z'
+                  deleted_at: null
+                  seq: 3
+                total: 1
+                limit: 50
+                offset: 0
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+    post:
+      tags:
+      - Students
+      summary: Thêm sinh viên
+      description: Nếu gửi `subject_id`, sinh viên được ghi danh luôn vào môn đó (môn phải thuộc quyền
+        của người gọi).
+      x-status: planned
+      security: *id012
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/StudentCreate'
+      responses:
+        '201':
+          description: Đã tạo
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/StudentPublic'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '409':
+          $ref: '#/components/responses/Conflict'
+        '422':
+          $ref: '#/components/responses/ValidationError'
+  /students/{student_id}:
+    parameters:
+    - &id014
+      name: student_id
+      in: path
+      required: true
+      description: Mã sinh viên (MSSV)
+      schema:
+        type: string
+        example: SV2026001
+    get:
+      tags:
+      - Students
+      summary: Chi tiết một sinh viên
+      x-status: planned
+      security: *id012
+      responses:
+        '200':
+          description: Thành công
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/StudentPublic'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+    put:
+      tags:
+      - Students
+      summary: Sửa thông tin sinh viên
+      description: Chỉ cập nhật các trường được gửi.
+      x-status: planned
+      security: *id012
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/StudentUpdate'
+      responses:
+        '200':
+          description: Đã cập nhật
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/StudentPublic'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '422':
+          $ref: '#/components/responses/ValidationError'
+    delete:
+      tags:
+      - Students
+      summary: Xóa sinh viên (xóa mềm)
+      x-status: planned
+      security: *id012
+      responses:
+        '204':
+          description: Thành công, không có nội dung trả về
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+  /students/{student_id}/photo:
+    parameters:
+    - *id014
+    get:
+      tags:
+      - Students
+      summary: Xem ảnh sinh viên
+      description: Tùy chọn (ưu tiên thấp). `photo_path` trong dữ liệu là đường dẫn trên điện thoại nên
+        web cần endpoint này để hiển thị ảnh.
+      x-status: planned
+      security: *id012
+      responses:
+        '200':
+          description: Ảnh
+          content:
+            image/jpeg:
+              schema:
+                type: string
+                format: binary
+            image/png:
+              schema:
+                type: string
+                format: binary
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+    post:
+      tags:
+      - Students
+      summary: Tải ảnh sinh viên lên
+      description: Tùy chọn (ưu tiên thấp). `multipart/form-data`, trường `file` (jpeg hoặc png).
+      x-status: planned
+      security: *id012
+      responses:
+        '200':
+          description: Đã lưu ảnh
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '422':
+          $ref: '#/components/responses/ValidationError'
+      requestBody:
+        required: true
+        content:
+          multipart/form-data:
+            schema:
+              type: object
+              required:
+              - file
+              properties:
+                file:
+                  type: string
+                  format: binary
+  /subjects:
+    get:
+      tags:
+      - Subjects
+      summary: Danh sách môn học
+      description: 'Lọc thêm `status` và `instructor_id`. `sort` hợp lệ: `subject_id`, `subject_name`,
+        `updated_at`. ADMIN chỉ thấy môn của mình.'
+      x-status: planned
+      security: *id012
+      parameters:
+      - *id015
+      - *id016
+      - *id017
+      - *id018
+      - name: status
+        in: query
+        schema:
+          type: string
+          example: ASSIGNED
+      - name: instructor_id
+        in: query
+        description: Chỉ SUPER_ADMIN lọc theo giảng viên
+        schema:
+          type: string
+      responses:
+        '200':
+          description: Thành công
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SubjectList'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+    post:
+      tags:
+      - Subjects
+      summary: Tạo môn học
+      x-status: planned
+      security: *id012
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/SubjectInput'
+      responses:
+        '201':
+          description: Đã tạo
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SubjectRecord'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '409':
+          $ref: '#/components/responses/Conflict'
+        '422':
+          $ref: '#/components/responses/ValidationError'
+  /subjects/{subject_id}:
+    parameters:
+    - &id019
+      name: subject_id
+      in: path
+      required: true
+      description: Mã môn học
+      schema:
+        type: string
+        example: IT001
+    get:
+      tags:
+      - Subjects
+      summary: Chi tiết một môn học
+      x-status: planned
+      security: *id012
+      responses:
+        '200':
+          description: Thành công
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SubjectRecord'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+    put:
+      tags:
+      - Subjects
+      summary: Sửa môn học
+      description: Chỉ cập nhật các trường được gửi.
+      x-status: planned
+      security: *id012
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/SubjectUpdate'
+      responses:
+        '200':
+          description: Đã cập nhật
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SubjectRecord'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '422':
+          $ref: '#/components/responses/ValidationError'
+    delete:
+      tags:
+      - Subjects
+      summary: Xóa môn học (xóa mềm)
+      x-status: planned
+      security: *id012
+      responses:
+        '204':
+          description: Thành công, không có nội dung trả về
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+  /subjects/{subject_id}/students:
+    parameters:
+    - *id019
+    get:
+      tags:
+      - Subjects
+      summary: Danh sách sinh viên của một môn
+      description: Sinh viên đã ghi danh (bảng `enrollments`).
+      x-status: planned
+      security: *id012
+      parameters: *id020
+      responses:
+        '200':
+          description: Thành công
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/EnrolledStudentList'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+    post:
+      tags:
+      - Subjects
+      summary: Ghi danh sinh viên vào môn
+      x-status: planned
+      security: *id012
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/EnrollmentCreate'
+      responses:
+        '201':
+          description: Đã ghi danh
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/EnrollmentRecord'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/Conflict'
+        '422':
+          $ref: '#/components/responses/ValidationError'
+  /subjects/{subject_id}/students/{student_id}:
+    parameters:
+    - *id019
+    - *id014
+    delete:
+      tags:
+      - Subjects
+      summary: Hủy ghi danh sinh viên khỏi môn (xóa mềm)
+      x-status: planned
+      security: *id012
+      responses:
+        '204':
+          description: Thành công, không có nội dung trả về
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+  /checkins:
+    get:
+      tags:
+      - Attendance
+      summary: Lịch sử điểm danh
+      description: 'Lọc theo `subject_id`, `student_id`, khoảng ngày. `sort` hợp lệ: `checkin_date`, `checkin_time`,
+        `updated_at` (mặc định `-checkin_date`). ADMIN chỉ thấy môn của mình.'
+      x-status: planned
+      security: *id012
+      parameters:
+      - name: subject_id
+        in: query
+        schema:
+          type: string
+      - name: student_id
+        in: query
+        schema:
+          type: string
+      - &id021
+        name: date_from
+        in: query
+        description: Từ ngày (YYYY-MM-DD)
+        schema:
+          type: string
+          format: date
+          example: '2026-11-01'
+      - &id022
+        name: date_to
+        in: query
+        description: Đến ngày (YYYY-MM-DD)
+        schema:
+          type: string
+          format: date
+          example: '2026-11-30'
+      - $ref: '#/components/parameters/Limit'
+      - $ref: '#/components/parameters/Offset'
+      - $ref: '#/components/parameters/Sort'
+      responses:
+        '200':
+          description: Thành công
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CheckinList'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+  /checkins/{checkin_id}:
+    parameters:
+    - name: checkin_id
+      in: path
+      required: true
+      schema:
+        type: integer
+        example: 1
+    delete:
+      tags:
+      - Attendance
+      summary: Xóa một lượt điểm danh (xóa mềm)
+      x-status: planned
+      security: *id012
+      responses:
+        '204':
+          description: Thành công, không có nội dung trả về
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+  /attendance:
+    post:
+      tags:
+      - Attendance
+      summary: Ghi một lượt điểm danh
+      description: Dùng cho Web điểm danh tay và cho app Android khi không đi qua sync. Server kiểm tra
+        sinh viên đã ghi danh môn đó và môn thuộc quyền người gọi. Gửi lặp cùng `uuid` trả lại bản ghi
+        cũ với `200`, không tạo trùng.
+      x-status: planned
+      security: *id012
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/AttendanceCreate'
+      responses:
+        '201':
+          description: Đã ghi điểm danh
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CheckinHistoryRecord'
+        '200':
+          description: '`uuid` đã tồn tại, trả lại bản ghi cũ'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CheckinHistoryRecord'
+        '422':
+          description: Dữ liệu sai hoặc sinh viên chưa ghi danh môn này
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+              example:
+                error:
+                  code: NOT_ENROLLED
+                  message: Sinh viên chưa ghi danh môn học này.
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+  /subjects/{subject_id}/attendance-summary:
+    parameters:
+    - *id019
+    get:
+      tags:
+      - Attendance
+      summary: Thống kê điểm danh của một môn
+      description: Mỗi sinh viên đã ghi danh một dòng. Số buổi tính từ các ngày có điểm danh của môn (xem
+        `total_sessions`). Dùng `date_from` và `date_to` để giới hạn.
+      x-status: planned
+      security: *id012
+      parameters:
+      - *id021
+      - *id022
+      responses:
+        '200':
+          description: Thành công
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AttendanceSummary'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+  /admins:
+    get:
+      tags:
+      - Admins
+      summary: Danh sách tài khoản admin / giảng viên
+      description: '`q` tìm theo `admin_id`, `email`, `full_name`. Lọc thêm `role`. SUPER_ADMIN xem tất
+        cả; ADMIN chỉ xem được chính mình.'
+      x-status: planned
+      security: *id012
+      parameters:
+      - *id015
+      - *id016
+      - *id017
+      - *id018
+      - name: role
+        in: query
+        schema:
+          type: string
+          enum:
+          - ADMIN
+          - SUPER_ADMIN
+      responses:
+        '200':
+          description: Thành công
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AdminList'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+  /admins/{admin_id}:
+    parameters:
+    - name: admin_id
+      in: path
+      required: true
+      description: Mã tài khoản
+      schema:
+        type: string
+        example: ADM_001
+    get:
+      tags:
+      - Admins
+      summary: Chi tiết một tài khoản
+      x-status: planned
+      security: *id012
+      responses:
+        '200':
+          description: Thành công
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AdminPublic'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+  /subjects/{subject_id}/email-recipients:
+    parameters:
+    - *id019
+    get:
+      tags:
+      - Email Reports
+      summary: Danh sách người nhận báo cáo
+      description: Tùy chọn (ưu tiên thấp).
+      x-status: planned
+      security: *id012
+      parameters:
+      - $ref: '#/components/parameters/Limit'
+      - $ref: '#/components/parameters/Offset'
+      responses:
+        '200':
+          description: Thành công
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/EmailRecipientList'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+    post:
+      tags:
+      - Email Reports
+      summary: Thêm người nhận báo cáo
+      description: Tùy chọn (ưu tiên thấp). Trùng (`subject_id`, `email_address`) trả `409`.
+      x-status: planned
+      security: *id012
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/EmailRecipientInput'
+      responses:
+        '201':
+          description: Đã thêm
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/EmailRecipientRecord'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/Conflict'
+        '422':
+          $ref: '#/components/responses/ValidationError'
+  /subjects/{subject_id}/email-recipients/{email_id}:
+    parameters:
+    - *id019
+    - name: email_id
+      in: path
+      required: true
+      schema:
+        type: integer
+        example: 1
+    put:
+      tags:
+      - Email Reports
+      summary: Sửa người nhận báo cáo
+      description: Tùy chọn (ưu tiên thấp).
+      x-status: planned
+      security: *id012
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/EmailRecipientInput'
+      responses:
+        '200':
+          description: Đã cập nhật
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/EmailRecipientRecord'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '422':
+          $ref: '#/components/responses/ValidationError'
+    delete:
+      tags:
+      - Email Reports
+      summary: Xóa người nhận báo cáo (xóa mềm)
+      description: Tùy chọn (ưu tiên thấp).
+      x-status: planned
+      security: *id012
+      responses:
+        '204':
+          description: Thành công, không có nội dung trả về
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+  /subjects/{subject_id}/send-report:
+    parameters:
+    - *id019
+    post:
+      tags:
+      - Email Reports
+      summary: Gửi báo cáo điểm danh qua email
+      description: 'Tùy chọn (ưu tiên thấp). Gửi cho các người nhận có `is_selected = true`. Chạy nền:
+        trả `202` kèm `job_id`, theo dõi bằng `GET /jobs/{id}`.'
+      x-status: planned
+      security: *id012
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                date_from:
+                  type: string
+                  format: date
+                date_to:
+                  type: string
+                  format: date
+      responses:
+        '202':
+          description: Đã nhận, đang gửi
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  job_id:
+                    type: string
+                    example: b7c1d2e3-0000-4000-8000-000000000000
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
   /import/csv:
     post:
-      tags: [CSV Import & Background Jobs]
+      tags:
+      - CSV Import & Background Jobs
       summary: Đưa tệp CSV vào Redis Queue (RQ) để xử lý bất đồng bộ
       description: |
         Hỗ trợ import CSV cho 3 loại dữ liệu thông qua trường form `type` (hoặc tự động nhận diện dựa trên tên cột header):
@@ -522,20 +2049,23 @@ paths:
             schema:
               type: object
               required:
-                - file
+              - file
               properties:
                 file:
                   type: string
                   format: binary
-                  description: "Tệp CSV mã hóa UTF-8"
+                  description: Tệp CSV mã hóa UTF-8
                 type:
                   type: string
-                  enum: [students, subjects, admin]
+                  enum:
+                  - students
+                  - subjects
+                  - admin
                   default: students
-                  description: "Loại dữ liệu cần import (nếu bỏ trống sẽ tự nhận diện qua header CSV)"
+                  description: Loại dữ liệu cần import (nếu bỏ trống sẽ tự nhận diện qua header CSV)
                 subject_id:
                   type: string
-                  description: "Mã môn học (tùy chọn) để tự động đăng ký sinh viên vào bảng enrollments"
+                  description: Mã môn học (tùy chọn) để tự động đăng ký sinh viên vào bảng enrollments
       responses:
         '202':
           description: Đã nhận file thành công và đưa vào hàng đợi xử lý
@@ -544,22 +2074,22 @@ paths:
               schema:
                 type: object
                 required:
-                  - job_id
-                  - status
+                - job_id
+                - status
                 properties:
                   job_id:
                     type: string
-                    example: "c7a8d9e0-1234-4567-89ab-cdef01234567"
+                    example: c7a8d9e0-1234-4567-89ab-cdef01234567
                   status:
                     type: string
-                    example: "queued"
+                    example: queued
                   message:
                     type: string
-                    example: "Đã nhận file CSV và đưa vào hàng đợi xử lý."
+                    example: Đã nhận file CSV và đưa vào hàng đợi xử lý.
               example:
-                job_id: "c7a8d9e0-1234-4567-89ab-cdef01234567"
-                status: "queued"
-                message: "Đã nhận file CSV và đưa vào hàng đợi xử lý."
+                job_id: c7a8d9e0-1234-4567-89ab-cdef01234567
+                status: queued
+                message: Đã nhận file CSV và đưa vào hàng đợi xử lý.
         '400':
           description: Thiếu trường `file` hoặc tệp CSV rỗng
           content:
@@ -568,20 +2098,21 @@ paths:
                 $ref: '#/components/schemas/ErrorResponse'
               example:
                 error:
-                  code: "MISSING_FILE"
-                  message: "Thiếu tệp CSV tải lên (trường 'file' trong multipart/form-data là bắt buộc)."
-
+                  code: MISSING_FILE
+                  message: Thiếu tệp CSV tải lên (trường 'file' trong multipart/form-data là bắt buộc).
+      x-status: implemented
   /jobs/{id}:
     get:
-      tags: [CSV Import & Background Jobs]
+      tags:
+      - CSV Import & Background Jobs
       summary: Kiểm tra tiến độ và kết quả xử lý của tác vụ nền (Background Job)
       parameters:
-        - name: id
-          in: path
-          required: true
-          schema:
-            type: string
-          description: "Job ID nhận được từ API `/import/csv`"
+      - name: id
+        in: path
+        required: true
+        schema:
+          type: string
+        description: Job ID nhận được từ API `/import/csv`
       responses:
         '200':
           description: Trạng thái chi tiết của job (`queued`, `started`, `finished`, `failed`)
@@ -590,14 +2121,22 @@ paths:
               schema:
                 type: object
                 required:
-                  - job_id
-                  - status
+                - job_id
+                - status
                 properties:
                   job_id:
                     type: string
                   status:
                     type: string
-                    enum: [queued, started, deferred, finished, stopped, scheduled, canceled, failed]
+                    enum:
+                    - queued
+                    - started
+                    - deferred
+                    - finished
+                    - stopped
+                    - scheduled
+                    - canceled
+                    - failed
                   created_at:
                     type: string
                     format: date-time
@@ -628,12 +2167,12 @@ paths:
                     type: string
                     nullable: true
               example:
-                job_id: "c7a8d9e0-1234-4567-89ab-cdef01234567"
-                status: "finished"
-                created_at: "2026-11-09T10:30:00Z"
-                ended_at: "2026-11-09T10:30:01Z"
+                job_id: c7a8d9e0-1234-4567-89ab-cdef01234567
+                status: finished
+                created_at: '2026-11-09T10:30:00Z'
+                ended_at: '2026-11-09T10:30:01Z'
                 result:
-                  type: "students"
+                  type: students
                   total_rows: 2
                   imported: 2
                   updated: 0
@@ -648,12 +2187,13 @@ paths:
                 $ref: '#/components/schemas/ErrorResponse'
               example:
                 error:
-                  code: "JOB_NOT_FOUND"
-                  message: "Không tìm thấy tác vụ nền với id 'does-not-exist-123'."
-
+                  code: JOB_NOT_FOUND
+                  message: Không tìm thấy tác vụ nền với id 'does-not-exist-123'.
+      x-status: implemented
   /sync/push:
     post:
-      tags: [Synchronization]
+      tags:
+      - Synchronization
       summary: Đẩy các bản ghi thêm mới, cập nhật và xóa mềm từ Client lên Server
       description: |
         - Server tự động xử lý các bảng theo thứ tự từ bảng cha đến bảng con:
@@ -694,48 +2234,48 @@ paths:
                     $ref: '#/components/schemas/EmailRecipientRecord'
             example:
               students:
-                - student_id: "SV2026001"
-                  full_name: "Nguyễn Văn A (Thêm mới)"
-                  email: "sv001@student.edu.vn"
-                  phone: "0901112222"
-                  checkin_password: "1111"
-                  uuid: "22222222-3333-4444-8555-666666666601"
-                  updated_at: "2026-11-09T11:00:00Z"
-                  deleted_at: null
-                - student_id: "SV2026002"
-                  full_name: "Trần Thị B (Đã sửa tên & SĐT)"
-                  email: "sv002@student.edu.vn"
-                  phone: "0903334444"
-                  uuid: "22222222-3333-4444-8555-666666666602"
-                  updated_at: "2026-11-09T11:05:00Z"
-                  deleted_at: null
-                - student_id: "SV2026003"
-                  full_name: "Lê Văn C (Xóa mềm)"
-                  uuid: "22222222-3333-4444-8555-666666666603"
-                  updated_at: "2026-11-09T11:10:00Z"
-                  deleted_at: "2026-11-09T11:10:00Z"
+              - student_id: SV2026001
+                full_name: Nguyễn Văn A (Thêm mới)
+                email: sv001@student.edu.vn
+                phone: 0901112222
+                checkin_password: '1111'
+                uuid: 22222222-3333-4444-8555-666666666601
+                updated_at: '2026-11-09T11:00:00Z'
+                deleted_at: null
+              - student_id: SV2026002
+                full_name: Trần Thị B (Đã sửa tên & SĐT)
+                email: sv002@student.edu.vn
+                phone: 0903334444
+                uuid: 22222222-3333-4444-8555-666666666602
+                updated_at: '2026-11-09T11:05:00Z'
+                deleted_at: null
+              - student_id: SV2026003
+                full_name: Lê Văn C (Xóa mềm)
+                uuid: 22222222-3333-4444-8555-666666666603
+                updated_at: '2026-11-09T11:10:00Z'
+                deleted_at: '2026-11-09T11:10:00Z'
               subjects:
-                - subject_id: "IT001"
-                  subject_name: "Trí tuệ Nhân tạo"
-                  time_slot: "Thứ 3 (09:30 - 11:30)"
-                  subject_status: "UNASSIGNED"
-                  uuid: "11111111-2222-4333-8444-555555555501"
-                  updated_at: "2026-11-09T11:00:00Z"
-                  deleted_at: null
+              - subject_id: IT001
+                subject_name: Trí tuệ Nhân tạo
+                time_slot: Thứ 3 (09:30 - 11:30)
+                subject_status: UNASSIGNED
+                uuid: 11111111-2222-4333-8444-555555555501
+                updated_at: '2026-11-09T11:00:00Z'
+                deleted_at: null
               enrollments:
-                - student_id: "SV2026001"
-                  subject_id: "IT001"
-                  enrollment_status: "Enrolled"
-                  uuid: "33333333-4444-4555-8666-777777777701"
-                  updated_at: "2026-11-09T11:02:00Z"
-                  deleted_at: null
+              - student_id: SV2026001
+                subject_id: IT001
+                enrollment_status: Enrolled
+                uuid: 33333333-4444-4555-8666-777777777701
+                updated_at: '2026-11-09T11:02:00Z'
+                deleted_at: null
       responses:
         '200':
           description: Đồng bộ đẩy lên thành công
           content:
             application/json:
               example:
-                status: "ok"
+                status: ok
                 applied:
                   admin: 0
                   subjects: 1
@@ -752,29 +2292,33 @@ paths:
                   email_recipients: 0
                 latest_seq: 15
         '409':
-          description: Vi phạm khóa ngoại (ví dụ đẩy enrollments cho student_id hoặc subject_id chưa tồn tại) hoặc xung đột Unique
+          description: Vi phạm khóa ngoại (ví dụ đẩy enrollments cho student_id hoặc subject_id chưa tồn
+            tại) hoặc xung đột Unique
           content:
             application/json:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
               example:
                 error:
-                  code: "INTEGRITY_CONFLICT"
-                  message: "Vi phạm ràng buộc khóa ngoại (Foreign Key) hoặc tính duy nhất (Unique) khi đồng bộ."
+                  code: INTEGRITY_CONFLICT
+                  message: Vi phạm ràng buộc khóa ngoại (Foreign Key) hoặc tính duy nhất (Unique) khi
+                    đồng bộ.
         '422':
-          description: Dữ liệu sai định dạng (thiếu trường bắt buộc hoặc face_embedding không đúng 192 chiều)
+          description: Dữ liệu sai định dạng (thiếu trường bắt buộc hoặc face_embedding không đúng 192
+            chiều)
           content:
             application/json:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
               example:
                 error:
-                  code: "VALIDATION_ERROR"
-                  message: "Trường face_embedding phải là mảng số thực có đúng 192 chiều."
-
+                  code: VALIDATION_ERROR
+                  message: Trường face_embedding phải là mảng số thực có đúng 192 chiều.
+      x-status: implemented
   /sync/pull:
     get:
-      tags: [Synchronization]
+      tags:
+      - Synchronization
       summary: Kéo danh sách các bản ghi thay đổi từ Server có `seq > after_seq`
       description: |
         - Trả về tất cả các bản ghi có `seq > after_seq` trên cả 6 bảng, sắp xếp theo `seq` tăng dần.
@@ -782,23 +2326,23 @@ paths:
         - Nếu còn dữ liệu phía sau, `has_more` sẽ là `true`; Client tiếp tục gọi `/sync/pull?after_seq=<next_seq>` cho đến khi `has_more = false`.
         - **Lưu ý:** Kết quả trả về **bao gồm cả các bản ghi đã xóa mềm** (`deleted_at != null`) để Client đồng bộ trạng thái xóa.
       parameters:
-        - name: after_seq
-          in: query
-          required: false
-          schema:
-            type: integer
-            default: 0
-            minimum: 0
-          description: "Số sequence lớn nhất mà Client đã đồng bộ ở lần trước (mặc định 0)"
-        - name: limit
-          in: query
-          required: false
-          schema:
-            type: integer
-            default: 100
-            minimum: 1
-            maximum: 500
-          description: "Số lượng bản ghi tối đa trả về trong 1 lần pull (mặc định 100, tối đa 500)"
+      - name: after_seq
+        in: query
+        required: false
+        schema:
+          type: integer
+          default: 0
+          minimum: 0
+        description: Số sequence lớn nhất mà Client đã đồng bộ ở lần trước (mặc định 0)
+      - name: limit
+        in: query
+        required: false
+        schema:
+          type: integer
+          default: 100
+          minimum: 1
+          maximum: 500
+        description: Số lượng bản ghi tối đa trả về trong 1 lần pull (mặc định 100, tối đa 500)
       responses:
         '200':
           description: Danh sách thay đổi kèm thông tin phân trang sequence
@@ -813,50 +2357,50 @@ paths:
                 changes:
                   admin: []
                   subjects:
-                    - subject_id: "IT001"
-                      subject_name: "Trí tuệ Nhân tạo"
-                      time_slot: "Thứ 3 (09:30 - 11:30)"
-                      created_by: null
-                      instructor_id: null
-                      subject_status: "UNASSIGNED"
-                      created_at: null
-                      semester_start_date: null
-                      semester_end_date: null
-                      uuid: "11111111-2222-4333-8444-555555555501"
-                      updated_at: "2026-11-09T11:00:00Z"
-                      deleted_at: null
-                      seq: 11
+                  - subject_id: IT001
+                    subject_name: Trí tuệ Nhân tạo
+                    time_slot: Thứ 3 (09:30 - 11:30)
+                    created_by: null
+                    instructor_id: null
+                    subject_status: UNASSIGNED
+                    created_at: null
+                    semester_start_date: null
+                    semester_end_date: null
+                    uuid: 11111111-2222-4333-8444-555555555501
+                    updated_at: '2026-11-09T11:00:00Z'
+                    deleted_at: null
+                    seq: 11
                   students:
-                    - student_id: "SV2026001"
-                      full_name: "Nguyễn Văn A (Thêm mới)"
-                      email: "sv001@student.edu.vn"
-                      phone: "0901112222"
-                      photo_path: null
-                      checkin_password: "1111"
-                      face_embedding: null
-                      uuid: "22222222-3333-4444-8555-666666666601"
-                      updated_at: "2026-11-09T11:00:00Z"
-                      deleted_at: null
-                      seq: 12
-                    - student_id: "SV2026003"
-                      full_name: "Lê Văn C (Xóa mềm)"
-                      email: null
-                      phone: null
-                      photo_path: null
-                      checkin_password: null
-                      face_embedding: null
-                      uuid: "22222222-3333-4444-8555-666666666603"
-                      updated_at: "2026-11-09T11:10:00Z"
-                      deleted_at: "2026-11-09T11:10:00Z"
-                      seq: 14
+                  - student_id: SV2026001
+                    full_name: Nguyễn Văn A (Thêm mới)
+                    email: sv001@student.edu.vn
+                    phone: 0901112222
+                    photo_path: null
+                    checkin_password: '1111'
+                    face_embedding: null
+                    uuid: 22222222-3333-4444-8555-666666666601
+                    updated_at: '2026-11-09T11:00:00Z'
+                    deleted_at: null
+                    seq: 12
+                  - student_id: SV2026003
+                    full_name: Lê Văn C (Xóa mềm)
+                    email: null
+                    phone: null
+                    photo_path: null
+                    checkin_password: null
+                    face_embedding: null
+                    uuid: 22222222-3333-4444-8555-666666666603
+                    updated_at: '2026-11-09T11:10:00Z'
+                    deleted_at: '2026-11-09T11:10:00Z'
+                    seq: 14
                   enrollments:
-                    - student_id: "SV2026001"
-                      subject_id: "IT001"
-                      enrollment_status: "Enrolled"
-                      uuid: "33333333-4444-4555-8666-777777777701"
-                      updated_at: "2026-11-09T11:02:00Z"
-                      deleted_at: null
-                      seq: 15
+                  - student_id: SV2026001
+                    subject_id: IT001
+                    enrollment_status: Enrolled
+                    uuid: 33333333-4444-4555-8666-777777777701
+                    updated_at: '2026-11-09T11:02:00Z'
+                    deleted_at: null
+                    seq: 15
                   checkin_history: []
                   email_recipients: []
         '400':
@@ -865,4 +2409,29 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
-
+      x-status: implemented
+  /sync/status:
+    get:
+      tags:
+      - Synchronization
+      summary: Hỏi nhanh có dữ liệu mới hay không
+      description: Trả `latest_seq` hiện tại. App Android so sánh với `seq` đã kéo gần nhất để quyết định
+        có gọi `/sync/pull` hay không. Web không cần dùng.
+      x-status: implemented
+      security: *id012
+      responses:
+        '200':
+          description: Thành công
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status:
+                    type: string
+                    example: ok
+                  latest_seq:
+                    type: integer
+                    example: 128
+        '401':
+          $ref: '#/components/responses/Unauthorized'
