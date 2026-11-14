@@ -78,6 +78,10 @@ def create_app():
     app.register_blueprint(api_bp, url_prefix="/api/v1")
     app.register_blueprint(api_bp, name="api_root", url_prefix="")
 
+    from app.checkins import bp as checkins_bp
+    app.register_blueprint(checkins_bp, url_prefix="/api/v1")
+    app.register_blueprint(checkins_bp, name="checkins_root", url_prefix="")
+
     @app.route("/openapi.yml", methods=["GET"])
     @app.route("/api/v1/openapi.yml", methods=["GET"])
     def serve_openapi_yaml():
