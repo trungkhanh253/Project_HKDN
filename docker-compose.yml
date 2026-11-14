@@ -32,7 +32,8 @@ services:
   api:
     build: ./server
     container_name: hkdn_api
-    command: gunicorn -w 4 -k gevent --reload "app:create_app()" --bind 0.0.0.0:5000
+    env_file: .env
+    command: gunicorn -w 4 -k gevent "app:create_app()" --bind 0.0.0.0:5000
     volumes:
       - ./server:/app
       - ./docs:/docs:ro
@@ -61,6 +62,7 @@ services:
   worker:
     build: ./server
     container_name: hkdn_worker
+    env_file: .env
     command: python worker.py
     volumes:
       - ./server:/app
@@ -71,6 +73,12 @@ services:
       - TEST_BASE_URL=http://localhost:5000
       - REDIS_URL=${REDIS_URL:-redis://redis:6379/0}
       - SECRET_KEY=${SECRET_KEY:?SECRET_KEY is required}
+      - SMTP_HOST=${SMTP_HOST:-smtp-relay.brevo.com}
+      - SMTP_PORT=${SMTP_PORT:-587}
+      - SMTP_USERNAME=${SMTP_USERNAME:-}
+      - SMTP_PASSWORD=${SMTP_PASSWORD:-}
+      - MAIL_FROM=${MAIL_FROM:-}
+      - RESET_TOKEN_TTL_SECONDS=${RESET_TOKEN_TTL_SECONDS:-120}
     depends_on:
       postgres:
         condition: service_healthy

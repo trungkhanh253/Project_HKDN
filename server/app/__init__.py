@@ -1,8 +1,11 @@
 import os
 from pathlib import Path
 import yaml
-from flask import Flask, Response, jsonify
-from flask_cors import CORS
+from flask import Flask, Response, jsonify, request
+try:
+    from flask_cors import CORS
+except ImportError:
+    CORS = None
 from flask_sqlalchemy import SQLAlchemy
 from flask_migrate import Migrate
 from werkzeug.exceptions import HTTPException
@@ -79,17 +82,34 @@ def create_app():
         if origin.strip()
     ]
 
-    CORS(
-        app,
-        resources={
-            r"/*": {
-                "origins": cors_origins,
-            }
-        },
-        methods=["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
-        allow_headers=["Content-Type", "Authorization"],
-        supports_credentials=False,
-    )
+    if CORS is not None:
+        CORS(
+            app,
+            resources={
+                r"/*": {
+                    "origins": cors_origins,
+                }
+            },
+            methods=["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
+            allow_headers=["Content-Type", "Authorization"],
+            supports_credentials=False,
+        )
+
+    @app.after_request
+    def add_cors_headers(response):
+        req_origin = request.headers.get("Origin")
+        if req_origin and ("*" in cors_origins or req_origin in cors_origins):
+            response.headers["Access-Control-Allow-Origin"] = req_origin
+        else:
+            response.headers["Access-Control-Allow-Origin"] = "*"
+        response.headers["Access-Control-Allow-Headers"] = "Content-Type,Authorization,X-Requested-With"
+        response.headers["Access-Control-Allow-Methods"] = "GET,POST,PUT,DELETE,PATCH,OPTIONS"
+        return response
+
+    @app.route("/", defaults={"path": ""}, methods=["OPTIONS"])
+    @app.route("/<path:path>", methods=["OPTIONS"])
+    def handle_options_preflight(path=""):
+        return Response("", status=204)
 
     db.init_app(app)
 
