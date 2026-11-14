@@ -142,3 +142,94 @@ def test_refresh_token_cannot_access_data(api, v1, session):
     )
 
     assert r.status_code == 401
+
+# ---------- Task 15: Bảo mật API Web ----------
+
+def test_web_students_do_not_expose_sensitive_fields(api, v1, session):
+    """GET /students không được trả mật khẩu điểm danh và dữ liệu khuôn mặt."""
+    headers = {
+        "Authorization": f"Bearer {session['access_token']}"
+    }
+
+    r = api.get(
+        f"{v1}/students",
+        headers=headers,
+        timeout=10
+    )
+
+    assert r.status_code == 200, r.text
+
+    data = r.json()
+    assert "students" in data
+
+    for student in data["students"]:
+        assert "checkin_password" not in student
+        assert "face_embedding" not in student
+
+
+def test_web_admins_do_not_expose_sensitive_fields(api, v1, session):
+    """GET /admins không được trả thông tin xác thực nhạy cảm."""
+    headers = {
+        "Authorization": f"Bearer {session['access_token']}"
+    }
+
+    r = api.get(
+        f"{v1}/admins",
+        headers=headers,
+        timeout=10
+    )
+
+    assert r.status_code == 200, r.text
+
+    data = r.json()
+    assert "admins" in data
+
+    sensitive_fields = {
+        "password",
+        "reset_token",
+        "expire_at",
+        "face_embedding",
+    }
+
+    for admin in data["admins"]:
+        assert sensitive_fields.isdisjoint(admin.keys())
+
+
+def test_cors_allows_configured_origin(api, v1):
+    """Frontend được cấu hình phải vượt qua CORS preflight."""
+    r = api.options(
+        f"{v1}/auth/login",
+        headers={
+            "Origin": "http://localhost:5173",
+            "Access-Control-Request-Method": "POST",
+            "Access-Control-Request-Headers": "content-type,authorization",
+        },
+        timeout=10,
+    )
+
+    assert r.status_code == 200
+    assert (
+        r.headers.get("Access-Control-Allow-Origin")
+        == "http://localhost:5173"
+    )
+
+    allowed_headers = r.headers.get(
+        "Access-Control-Allow-Headers", ""
+    ).lower()
+
+    assert "authorization" in allowed_headers
+    assert "content-type" in allowed_headers
+
+
+def test_cors_rejects_unknown_origin(api, v1):
+    """Origin không nằm trong danh sách cho phép không được cấp quyền CORS."""
+    r = api.options(
+        f"{v1}/auth/login",
+        headers={
+            "Origin": "http://untrusted.example:5173",
+            "Access-Control-Request-Method": "POST",
+        },
+        timeout=10,
+    )
+
+    assert "Access-Control-Allow-Origin" not in r.headers

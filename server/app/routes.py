@@ -206,7 +206,7 @@ def list_students():
 
     return jsonify({
         "count": len(students),
-        "students": [s.to_dict() for s in students]
+        "students": [s.to_public_dict() for s in students]
     }), 200
 
 

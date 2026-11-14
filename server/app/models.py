@@ -168,6 +168,14 @@ class Student(db.Model, SyncMetadataMixin):
             "deleted_at": _format_dt(self.deleted_at),
             "seq": self.seq,
         }
+    
+    def to_public_dict(self):
+        data = self.to_dict()
+
+        data.pop("checkin_password", None)
+        data.pop("face_embedding", None)
+
+        return data
 
 
 class Enrollment(db.Model, SyncMetadataMixin):

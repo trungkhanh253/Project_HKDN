@@ -44,6 +44,7 @@ services:
       - TEST_BASE_URL=http://localhost:5000
       - REDIS_URL=${REDIS_URL:-redis://redis:6379/0}
       - SECRET_KEY=${SECRET_KEY:?SECRET_KEY is required}
+      - CORS_ORIGINS=${CORS_ORIGINS:-}
     depends_on:
       postgres:
         condition: service_healthy
