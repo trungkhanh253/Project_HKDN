@@ -233,3 +233,96 @@ def test_cors_rejects_unknown_origin(api, v1):
     )
 
     assert "Access-Control-Allow-Origin" not in r.headers
+
+def test_sync_serialization_does_not_expose_sensitive_fields():
+    from app.repositories.sync_repository import SyncRepository
+
+    class FakeRow:
+        def to_dict(self):
+            return {
+                "student_id": "SV001",
+                "full_name": "Test Student",
+                "password": "secret",
+                "reset_token": "secret",
+                "expire_at": 123456,
+                "checkin_password": "123456",
+                "face_embedding": [0.1, 0.2],
+            }
+
+    result = SyncRepository._to_safe_dict(FakeRow())
+
+    sensitive_fields = (
+        "password",
+        "reset_token",
+        "expire_at",
+        "checkin_password",
+        "face_embedding",
+    )
+
+    for field in sensitive_fields:
+        assert field not in result
+
+    assert result["student_id"] == "SV001"
+    assert result["full_name"] == "Test Student"
+
+@pytest.mark.parametrize("flat_mode", [False, True])
+def test_sync_pull_response_has_no_sensitive_fields(
+    api, v1, session, flat_mode
+):
+    headers = {
+        "Authorization": f"Bearer {session['access_token']}"
+    }
+
+    params = {
+        "after_seq": 0,
+        "limit": 100,
+    }
+
+    if flat_mode:
+        params["format"] = "flat"
+
+    response = api.get(
+        f"{v1}/sync/pull",
+        headers=headers,
+        params=params,
+        timeout=10,
+    )
+
+    assert response.status_code == 200
+
+    data = response.json()
+    changes = data.get("changes", {})
+
+    if isinstance(changes, dict):
+        record_count = sum(
+            len(records)
+            for records in changes.values()
+        )
+    else:
+        record_count = len(changes)
+
+    assert record_count > 0, (
+        f"Sync Pull returned no records: flat_mode={flat_mode}"
+    )
+
+    sensitive_fields = {
+        "password",
+        "reset_token",
+        "expire_at",
+        "checkin_password",
+        "face_embedding",
+    }
+
+    def check_sensitive_fields(obj):
+        if isinstance(obj, dict):
+            for key, value in obj.items():
+                assert key not in sensitive_fields, (
+                    f"Sensitive field leaked: {key}"
+                )
+                check_sensitive_fields(value)
+
+        elif isinstance(obj, list):
+            for item in obj:
+                check_sensitive_fields(item)
+
+    check_sensitive_fields(changes)

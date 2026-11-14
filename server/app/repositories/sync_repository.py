@@ -135,7 +135,7 @@ class SyncRepository(BaseRepository):
                         "uuid": row.uuid,
                         "table_name": table_name,
                         "operation": op,
-                        "payload": row.to_dict(),
+                        "payload": SyncRepository._to_safe_dict(row),
                         "updated_at": BaseRepository.to_epoch_ms(row.updated_at),
                         "seq": seq_val,
                     }
@@ -152,7 +152,9 @@ class SyncRepository(BaseRepository):
 
         changes = {table_name: [] for table_name, _ in SYNC_TABLES}
         for _, table_name, row in selected:
-            changes[table_name].append(row.to_dict())
+            changes[table_name].append(
+            SyncRepository._to_safe_dict(row)
+        )
 
         return {
             "after_seq": after_seq,
@@ -702,3 +704,19 @@ class SyncRepository(BaseRepository):
             for field in ("recipient_name", "added_date", "is_selected"):
                 if field in item:
                     setattr(obj, field, item[field])
+
+
+    @staticmethod
+    def _to_safe_dict(row):
+        data = row.to_dict()
+
+        for field in (
+            "password",
+            "reset_token",
+            "expire_at",
+            "checkin_password",
+            "face_embedding",
+        ):
+            data.pop(field, None)
+
+        return data
