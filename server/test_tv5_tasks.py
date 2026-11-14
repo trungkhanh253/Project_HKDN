@@ -48,6 +48,7 @@ def run_tests():
     test_subj_id = f"SUB_TV5_{uuid.uuid4().hex[:4].upper()}"
     requests.post(
         f"{API_V1}/sync/push",
+        headers=headers_super,
         json={
             "subjects": [
                 {
@@ -82,11 +83,11 @@ def run_tests():
     print(f"[4] POST /students (tạo SV + tự ghi danh {test_subj_id})   : OK (HTTP 201)")
 
     # 4. TASK 1: GET /students/{id} và PUT /students/{id}
-    r_get_stu = requests.get(f"{API_V1}/students/{stu_test_id}", timeout=5)
+    r_get_stu = requests.get(f"{API_V1}/students/{stu_test_id}", headers=headers_gv, timeout=5)
     assert r_get_stu.status_code == 200 and r_get_stu.json()["student"]["student_id"] == stu_test_id
     print(f"[5] GET /students/{stu_test_id} (chi tiết sinh viên)     : OK (HTTP 200)")
 
-    r_put_stu = requests.post if False else requests.put(
+    r_put_stu = requests.put(
         f"{API_V1}/students/{stu_test_id}",
         headers=headers_gv,
         json={"full_name": "Nguyen Van Test TV5 (Đã Cập Nhật)", "phone": "0911223344"},
@@ -167,26 +168,26 @@ def run_tests():
         timeout=5,
     )
     assert r_del_stu.status_code == 200
-    r_check_del = requests.get(f"{API_V1}/students/{stu_test_id}", timeout=5)
+    r_check_del = requests.get(f"{API_V1}/students/{stu_test_id}", headers=headers_gv, timeout=5)
     assert r_check_del.status_code == 404, "Sau khi xóa mềm, GET không được thấy SV nữa"
     print(f"[11] DELETE /students/{stu_test_id} (xóa mềm)            : OK (HTTP 200 & ẩn khỏi GET)")
 
     # 7. TASK 3: Chuẩn hóa API Web (items, total, limit, offset, q, sort)
-    r_web_stu = requests.get(f"{API_V1}/students?limit=5&offset=0&q=Khoa&sort=student_id:desc", timeout=5)
+    r_web_stu = requests.get(f"{API_V1}/students?limit=5&offset=0&q=Khoa&sort=student_id:desc", headers=headers_super, timeout=5)
     assert r_web_stu.status_code == 200
     stu_res = r_web_stu.json()
     assert "items" in stu_res and "total" in stu_res and "limit" in stu_res and "offset" in stu_res
     print(f"[12] Chuẩn hóa GET /students (items, total, q, sort)    : OK (total={stu_res['total']})")
 
-    r_web_sub = requests.get(f"{API_V1}/subjects?limit=5&offset=0", timeout=5)
+    r_web_sub = requests.get(f"{API_V1}/subjects?limit=5&offset=0", headers=headers_super, timeout=5)
     assert r_web_sub.status_code == 200 and "items" in r_web_sub.json()
-    r_web_sub_detail = requests.get(f"{API_V1}/subjects/{test_subj_id}", timeout=5)
+    r_web_sub_detail = requests.get(f"{API_V1}/subjects/{test_subj_id}", headers=headers_super, timeout=5)
     assert r_web_sub_detail.status_code == 200 and "subject" in r_web_sub_detail.json()
     print(f"[13] Chuẩn hóa GET /subjects & GET /subjects/{{id}}       : OK")
 
-    r_web_adm = requests.get(f"{API_V1}/admins?limit=5&offset=0", timeout=5)
+    r_web_adm = requests.get(f"{API_V1}/admins?limit=5&offset=0", headers=headers_super, timeout=5)
     assert r_web_adm.status_code == 200 and "items" in r_web_adm.json()
-    r_web_adm_detail = requests.get(f"{API_V1}/admins/SADM_001", timeout=5)
+    r_web_adm_detail = requests.get(f"{API_V1}/admins/SADM_001", headers=headers_super, timeout=5)
     assert r_web_adm_detail.status_code == 200 and "admin" in r_web_adm_detail.json()
     print(f"[14] Chuẩn hóa GET /admins & GET /admins/{{id}}           : OK")
 
