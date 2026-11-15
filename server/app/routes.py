@@ -807,6 +807,184 @@ def get_subject_detail(subject_id: str):
     return jsonify({"subject": subject.to_dict()}), 200
 
 
+@api_bp.route("/subjects", methods=["POST"])
+@require_auth
+def create_subject():
+    admin, err = _get_authenticated_admin()
+    if err:
+        return err
+
+    data = request.get_json(silent=True)
+    if not isinstance(data, dict):
+        return error_response("INVALID_JSON", "Body request phải là JSON object.", 400)
+
+    subject_id = (data.get("subject_id") or "").strip()
+    subject_name = (data.get("subject_name") or "").strip()
+
+    if not subject_id or not subject_name:
+        return error_response("VALIDATION_ERROR", "Trường subject_id và subject_name là bắt buộc.", 422)
+
+    # Phân quyền: nếu là giảng viên (ADMIN), tự động gán instructor_id là chính mình
+    if admin.role != "SUPER_ADMIN":
+        data["instructor_id"] = admin.admin_id
+    else:
+        if not data.get("instructor_id"):
+            data["instructor_id"] = admin.admin_id
+
+    data["created_by"] = admin.admin_id
+
+    existing = SubjectRepository.get_by_id(subject_id, include_deleted=True)
+    if existing:
+        if existing.deleted_at is None:
+            return error_response("SUBJECT_CONFLICT", f"Môn học với mã '{subject_id}' đã tồn tại.", 409)
+        now = SubjectRepository.get_current_time()
+        existing.deleted_at = None
+        existing.subject_name = subject_name
+        existing.time_slot = data.get("time_slot")
+        existing.instructor_id = data.get("instructor_id")
+        existing.subject_status = data.get("subject_status", "ASSIGNED")
+        existing.semester_start_date = data.get("semester_start_date")
+        existing.semester_end_date = data.get("semester_end_date")
+        existing.updated_at = now
+        db.session.commit()
+        return jsonify(existing.to_dict()), 201
+
+    try:
+        new_subj = SubjectRepository.create(data)
+        return jsonify(new_subj.to_dict()), 201
+    except Exception as exc:
+        db.session.rollback()
+        return error_response("CREATE_SUBJECT_FAILED", f"Không thể tạo môn học: {str(exc)}", 400)
+
+
+@api_bp.route("/subjects/<string:subject_id>", methods=["PUT"])
+@require_auth
+def update_subject(subject_id: str):
+    admin, err = _get_authenticated_admin()
+    if err:
+        return err
+
+    data = request.get_json(silent=True)
+    if not isinstance(data, dict):
+        return error_response("INVALID_JSON", "Body request phải là JSON object.", 400)
+
+    subject = SubjectRepository.get_by_id(subject_id)
+    if not subject:
+        return error_response("SUBJECT_NOT_FOUND", f"Không tìm thấy môn học với mã '{subject_id}'.", 404)
+
+    # Phân quyền: Giảng viên chỉ được sửa môn của chính mình
+    if admin.role != "SUPER_ADMIN" and subject.instructor_id != admin.admin_id:
+        return error_response("FORBIDDEN", "Bạn không có quyền chỉnh sửa môn học này.", 403)
+
+    if admin.role != "SUPER_ADMIN" and "instructor_id" in data:
+        data["instructor_id"] = admin.admin_id
+
+    updated = SubjectRepository.update(subject_id, data)
+    return jsonify(updated.to_dict()), 200
+
+
+@api_bp.route("/subjects/<string:subject_id>", methods=["DELETE"])
+@require_auth
+def delete_subject(subject_id: str):
+    admin, err = _get_authenticated_admin()
+    if err:
+        return err
+
+    subject = SubjectRepository.get_by_id(subject_id)
+    if not subject:
+        return error_response("SUBJECT_NOT_FOUND", f"Không tìm thấy môn học với mã '{subject_id}'.", 404)
+
+    if admin.role != "SUPER_ADMIN" and subject.instructor_id != admin.admin_id:
+        return error_response("FORBIDDEN", "Bạn không có quyền xóa môn học này.", 403)
+
+    SubjectRepository.soft_delete(subject_id)
+    return "", 204
+
+
+@api_bp.route("/subjects/<string:subject_id>/students", methods=["GET"])
+@require_auth
+def get_subject_students(subject_id: str):
+    admin, err = _get_authenticated_admin()
+    if err:
+        return err
+
+    subject = SubjectRepository.get_by_id(subject_id)
+    if not subject:
+        return error_response("SUBJECT_NOT_FOUND", f"Không tìm thấy môn học với mã '{subject_id}'.", 404)
+
+    if admin.role != "SUPER_ADMIN" and subject.instructor_id != admin.admin_id:
+        return error_response("FORBIDDEN", "Bạn không có quyền xem danh sách sinh viên của môn học này.", 403)
+
+    limit = max(1, min(request.args.get("limit", 50, type=int), 500))
+    offset = max(0, request.args.get("offset", 0, type=int))
+    q = request.args.get("q")
+
+    items, total = SubjectRepository.get_enrolled_students(subject_id, limit=limit, offset=offset, q=q)
+    return jsonify({
+        "items": items,
+        "total": total,
+        "limit": limit,
+        "offset": offset,
+    }), 200
+
+
+@api_bp.route("/subjects/<string:subject_id>/students", methods=["POST"])
+@require_auth
+def enroll_student_to_subject(subject_id: str):
+    admin, err = _get_authenticated_admin()
+    if err:
+        return err
+
+    subject = SubjectRepository.get_by_id(subject_id)
+    if not subject:
+        return error_response("SUBJECT_NOT_FOUND", f"Không tìm thấy môn học với mã '{subject_id}'.", 404)
+
+    if admin.role != "SUPER_ADMIN" and subject.instructor_id != admin.admin_id:
+        return error_response("FORBIDDEN", "Bạn không có quyền ghi danh sinh viên vào môn học này.", 403)
+
+    data = request.get_json(silent=True)
+    if not isinstance(data, dict):
+        return error_response("INVALID_JSON", "Body request phải là JSON object.", 400)
+
+    student_id = (data.get("student_id") or "").strip()
+    if not student_id:
+        return error_response("VALIDATION_ERROR", "Trường student_id là bắt buộc.", 422)
+
+    enrollment_status = data.get("enrollment_status", "Enrolled")
+
+    try:
+        enr, already_exists = SubjectRepository.enroll_student(subject_id, student_id, enrollment_status)
+        if already_exists:
+            return error_response("ENROLLMENT_CONFLICT", f"Sinh viên '{student_id}' đã được ghi danh vào môn học này.", 409)
+        return jsonify(enr.to_dict()), 201
+    except KeyError as ke:
+        return error_response("NOT_FOUND", str(ke), 404)
+    except Exception as exc:
+        db.session.rollback()
+        return error_response("ENROLL_FAILED", f"Lỗi ghi danh: {str(exc)}", 400)
+
+
+@api_bp.route("/subjects/<string:subject_id>/students/<string:student_id>", methods=["DELETE"])
+@require_auth
+def unenroll_student_from_subject(subject_id: str, student_id: str):
+    admin, err = _get_authenticated_admin()
+    if err:
+        return err
+
+    subject = SubjectRepository.get_by_id(subject_id)
+    if not subject:
+        return error_response("SUBJECT_NOT_FOUND", f"Không tìm thấy môn học với mã '{subject_id}'.", 404)
+
+    if admin.role != "SUPER_ADMIN" and subject.instructor_id != admin.admin_id:
+        return error_response("FORBIDDEN", "Bạn không có quyền hủy ghi danh sinh viên của môn học này.", 403)
+
+    success = SubjectRepository.unenroll_student(subject_id, student_id)
+    if not success:
+        return error_response("ENROLLMENT_NOT_FOUND", f"Sinh viên '{student_id}' chưa ghi danh hoặc đã bị hủy khỏi môn học này.", 404)
+
+    return "", 204
+
+
 @api_bp.route("/admins", methods=["GET"])
 @require_auth
 def list_admins():
