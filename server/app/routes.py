@@ -1,4 +1,4 @@
-﻿import os
+import os
 import redis
 from rq import Queue
 from rq.job import Job
