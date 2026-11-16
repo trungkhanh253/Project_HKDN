@@ -1,0 +1,25 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+venv/
+env/
+.env
+
+# Docker & IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# Android & Build artifacts
+.gradle/
+build/
+app/build/
+local.properties
+*.apk
+*.aar
+
+# OS generated
+.DS_Store
+Thumbs.db

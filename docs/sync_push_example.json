@@ -1,0 +1,63 @@
+{
+  "description": "HỢP ĐỒNG API: POST /api/v1/sync/push (Đẩy thay đổi từ SQLite lên PostgreSQL)",
+  "request_example": {
+    "device_id": "tablet_room_302",
+    "client_timestamp": 1731054000000,
+    "changes": [
+      {
+        "uuid": "8f3b6c2a-1123-4d56-9a78-123456789abc",
+        "table_name": "checkin_history",
+        "operation": "INSERT",
+        "payload": {
+          "student_id": "SV2024001",
+          "subject_id": "IT4010",
+          "checkin_time": "08:15:30",
+          "checkin_date": "2026-11-08"
+        },
+        "updated_at": 1731054000000
+      },
+      {
+        "uuid": "b2c3d4e5-9988-4433-2211-abcdef012345",
+        "table_name": "students",
+        "operation": "UPDATE",
+        "payload": {
+          "student_id": "SV2024001",
+          "full_name": "Nguyễn Văn A",
+          "phone": "0912345678",
+          "email": "vana@example.com"
+        },
+        "updated_at": 1731054010000
+      },
+      {
+        "uuid": "f1e2d3c4-5566-7788-99aa-bbccddeeff00",
+        "table_name": "enrollments",
+        "operation": "DELETE",
+        "payload": {
+          "student_id": "SV2024002",
+          "subject_id": "IT4010"
+        },
+        "updated_at": 1731054020000
+      }
+    ]
+  },
+  "response_example_success": {
+    "success": true,
+    "synced_uuids": [
+      "8f3b6c2a-1123-4d56-9a78-123456789abc",
+      "b2c3d4e5-9988-4433-2211-abcdef012345",
+      "f1e2d3c4-5566-7788-99aa-bbccddeeff00"
+    ],
+    "failed_uuids": [],
+    "error_message": null
+  },
+  "response_example_partial_success": {
+    "success": true,
+    "synced_uuids": [
+      "8f3b6c2a-1123-4d56-9a78-123456789abc"
+    ],
+    "failed_uuids": [
+      "f1e2d3c4-5566-7788-99aa-bbccddeeff00"
+    ],
+    "error_message": "Foreign key constraint failed on enrollments"
+  }
+}

@@ -1,0 +1,1080 @@
+package com.iritech.irissample;
+
+import android.content.ContentValues;
+import android.content.Context;
+import android.database.Cursor;
+import android.database.sqlite.SQLiteDatabase;
+import android.database.sqlite.SQLiteOpenHelper;
+import java.security.MessageDigest;
+import java.security.NoSuchAlgorithmException;
+
+public class DatabaseHelper extends SQLiteOpenHelper {
+
+    private static final String DATABASE_NAME = "attendance.db";
+    private static final int DATABASE_VERSION = 22; // Version 21: Thêm cột/bảng/trigger phục vụ đồng bộ (uuid, updated_at, sync_outbox, sync_state, sync_meta)
+
+
+    // ===================== ĐỒNG BỘ (v21) =====================
+    // Theo quy ước sqlite_trigger_contract.md giữa Android Database và Android Sync.
+    private static final String TABLE_SYNC_OUTBOX = "sync_outbox"; // hàng đợi thay đổi chờ gửi lên server
+    private static final String TABLE_SYNC_STATE = "sync_state";   // cờ chặn trigger (is_suppressed)
+    private static final String TABLE_SYNC_META = "sync_meta";     // last_seq, device_id
+
+    /** 6 bảng dữ liệu được đồng bộ với server. */
+    // Viết thẳng tên bảng (không dùng TABLE_*) vì các hằng TABLE_* được khai báo phía dưới (tránh lỗi illegal forward reference).
+    private static final String[] SYNC_TABLES = {
+            "admin", "subjects", "students",
+            "enrollments", "checkin_history", "email_recipients"
+    };
+
+    /** Biểu thức SQLite sinh UUID v4 ngẫu nhiên. */
+    private static final String UUID_SQL =
+            "lower(hex(randomblob(4)))||'-'||lower(hex(randomblob(2)))||'-4'||" +
+                    "substr(lower(hex(randomblob(2))),2)||'-'||substr('89ab',abs(random())%4+1,1)||" +
+                    "substr(lower(hex(randomblob(2))),2)||'-'||lower(hex(randomblob(6)))";
+
+    /** Thời điểm hiện tại, tính bằng mili giây. */
+    private static final String NOW_SQL = "(strftime('%s','now')*1000)";
+
+    /** Điều kiện bật trigger: chỉ chạy khi cờ chặn đang tắt (tức không phải đang ghi dữ liệu kéo từ server về). */
+    private static final String SYNC_ON =
+            "(SELECT is_suppressed FROM sync_state WHERE id=1)=0";
+
+    // Bảng ADMIN
+    public static final String TABLE_ADMIN = "admin";
+    public static final String COL_ADMIN_ID = "admin_id";
+    public static final String COL_ADMIN_EMAIL = "email";
+    public static final String COL_ADMIN_PASSWORD = "password";
+    public static final String COL_ADMIN_FULL_NAME = "full_name";
+    public static final String COL_ADMIN_DOB = "date_of_birth";
+    public static final String COL_ADMIN_PHONE = "phone";
+    public static final String COL_ADMIN_GENDER = "gender";
+    public static final String COL_ADMIN_PHOTO = "photo_path";
+    public static final String COL_ADMIN_DESC = "description";
+    public static final String COL_ADMIN_ROLE = "role";
+    public static final String COL_ADMIN_CODE = "admin_code"; // Mã số giảng viên (chỉ Admin thường)
+    public static final String COL_ADMIN_RESET_TOKEN = "reset_token"; // Token reset password
+    public static final String COL_ADMIN_EXPIRE_AT = "expire_at"; // Thời gian hết hạn token (milliseconds)
+    public static final String COL_ADMIN_IS_FIRST_LOGIN = "is_first_login"; // Cờ đánh dấu lần đăng nhập đầu (cần cập nhật avatar/password)
+    public static final String COL_ADMIN_HAS_IRIS = "has_iris"; // Đánh dấu đã ghi danh mống mắt chưa (0 = chưa, 1 = rồi)
+
+    //Bảng Subject
+    public static final String TABLE_SUBJECTS = "subjects";
+    public static final String COL_SUBJECT_ID = "subject_id";
+    public static final String COL_SUBJECT_NAME = "subject_name";
+    public static final String COL_TIME_SLOT = "time_slot";
+    public static final String COL_SUBJECT_CREATED_BY = "created_by";
+    public static final String COL_SUBJECT_INSTRUCTOR_ID = "instructor_id";
+    public static final String COL_SUBJECT_STATUS = "subject_status";
+    public static final String COL_SUBJECT_CREATED_AT = "created_at";
+    public static final String COL_SUBJECT_SEMESTER_START = "semester_start_date"; // Ngày bắt đầu kì (dd/MM/yyyy)
+    public static final String COL_SUBJECT_SEMESTER_END = "semester_end_date";     // Ngày kết thúc kì = bắt đầu + 90 ngày (dd/MM/yyyy)
+
+    public static final String STATUS_UNASSIGNED = "UNASSIGNED";
+    public static final String STATUS_ASSIGNED = "ASSIGNED";
+
+    // Bảng STUDENTS
+    public static final String TABLE_STUDENTS = "students";
+    public static final String COL_STUDENT_ID = "student_id";
+    public static final String COL_FULL_NAME = "full_name";
+    public static final String COL_PHONE = "phone";
+    public static final String COL_EMAIL = "email";
+    public static final String COL_PHOTO_PATH = "photo_path";
+    public static final String COL_CHECKIN_PASSWORD = "checkin_password";
+
+    // Bảng ENROLLMENTS
+    public static final String TABLE_ENROLLMENTS = "enrollments";
+    public static final String COL_ENROLLMENT_STATUS = "enrollment_status";
+
+    // Bảng CHECKIN_HISTORY
+    public static final String TABLE_CHECKIN_HISTORY = "checkin_history";
+    public static final String COL_CHECKIN_ID = "checkin_id";
+    public static final String COL_CHECKIN_TIME = "checkin_time";
+    public static final String COL_CHECKIN_DATE = "checkin_date"; // Ngày điểm danh để biết điểm danh ngày nào
+
+    // Bảng EMAIL_RECIPIENTS - Lưu danh sách email nhận báo cáo điểm danh (per-subject)
+    public static final String TABLE_EMAIL_RECIPIENTS = "email_recipients";
+    public static final String COL_EMAIL_ID = "email_id";
+    public static final String COL_EMAIL_ADDRESS = "email_address";
+    public static final String COL_RECIPIENT_NAME = "recipient_name";
+    public static final String COL_ADDED_DATE = "added_date";
+
+    public DatabaseHelper(Context context) {
+        super(context, DATABASE_NAME, null, DATABASE_VERSION);
+    }
+
+    @Override
+    public void onCreate(SQLiteDatabase db) {
+        // Tạo bảng ADMIN
+        String CREATE_ADMIN_TABLE = "CREATE TABLE " + TABLE_ADMIN + " (" +
+                COL_ADMIN_ID + " TEXT PRIMARY KEY, " +
+                COL_ADMIN_EMAIL + " TEXT UNIQUE NOT NULL, " +
+                COL_ADMIN_PASSWORD + " TEXT, " +
+                COL_ADMIN_FULL_NAME + " TEXT NOT NULL, " +
+                COL_ADMIN_DOB + " TEXT, " +
+                COL_ADMIN_PHONE + " TEXT, " +
+                COL_ADMIN_GENDER + " TEXT, " +
+                COL_ADMIN_PHOTO + " TEXT, " +
+                COL_ADMIN_DESC + " TEXT, " +
+                COL_ADMIN_ROLE + " TEXT NOT NULL DEFAULT 'ADMIN', " +
+                COL_ADMIN_CODE + " TEXT, " +
+                COL_ADMIN_RESET_TOKEN + " TEXT, " +
+                COL_ADMIN_EXPIRE_AT + " INTEGER, " +
+                COL_ADMIN_IS_FIRST_LOGIN + " INTEGER DEFAULT 1, " + // 1 = first login, 0 = đã cập nhật
+                COL_ADMIN_HAS_IRIS + " INTEGER DEFAULT 0)"; // 0 = chưa ghi danh, 1 = đã ghi danh
+
+        // TẠO BẢNG SUBJECTS
+        String CREATE_SUBJECTS_TABLE = "CREATE TABLE " + TABLE_SUBJECTS + " (" +
+                COL_SUBJECT_ID + " TEXT PRIMARY KEY, " +
+                COL_SUBJECT_NAME + " TEXT NOT NULL, " +
+                COL_TIME_SLOT + " TEXT, " +
+                COL_SUBJECT_CREATED_BY + " TEXT, " +
+                COL_SUBJECT_INSTRUCTOR_ID + " TEXT, " +
+                COL_SUBJECT_STATUS + " TEXT NOT NULL DEFAULT 'UNASSIGNED', " +
+                COL_SUBJECT_CREATED_AT + " TEXT, " +
+                COL_SUBJECT_SEMESTER_START + " TEXT, " +
+                COL_SUBJECT_SEMESTER_END + " TEXT, " +
+                "FOREIGN KEY(" + COL_SUBJECT_CREATED_BY + ") REFERENCES " +
+                TABLE_ADMIN + "(" + COL_ADMIN_ID + ") ON DELETE SET NULL, " +
+                "FOREIGN KEY(" + COL_SUBJECT_INSTRUCTOR_ID + ") REFERENCES " +
+                TABLE_ADMIN + "(" + COL_ADMIN_ID + ") ON DELETE SET NULL);";
+
+        // TẠO BẢNG STUDENTS
+        String CREATE_STUDENTS_TABLE = "CREATE TABLE " + TABLE_STUDENTS + " (" +
+                COL_STUDENT_ID + " TEXT PRIMARY KEY, " +
+                COL_FULL_NAME + " TEXT, " +
+                COL_EMAIL + " TEXT, " +
+                COL_PHONE + " TEXT, " +
+                COL_PHOTO_PATH + " TEXT, " +
+                COL_CHECKIN_PASSWORD + " TEXT);";
+
+        // TẠO BẢNG ENROLLMENTS
+        String CREATE_ENROLLMENTS_TABLE = "CREATE TABLE " + TABLE_ENROLLMENTS + " (" +
+                COL_STUDENT_ID + " TEXT, " +
+                COL_SUBJECT_ID + " TEXT, " +
+                COL_ENROLLMENT_STATUS + " TEXT, " +
+                "PRIMARY KEY (" + COL_STUDENT_ID + ", " + COL_SUBJECT_ID + "), " +
+                "FOREIGN KEY(" + COL_STUDENT_ID + ") REFERENCES " + TABLE_STUDENTS + "(" + COL_STUDENT_ID + "), " +
+                "FOREIGN KEY(" + COL_SUBJECT_ID + ") REFERENCES " + TABLE_SUBJECTS + "(" + COL_SUBJECT_ID + "));";
+
+        // TẠO BẢNG CHECKIN_HISTORY
+        String CREATE_CHECKIN_HISTORY_TABLE = "CREATE TABLE " + TABLE_CHECKIN_HISTORY + " (" +
+                COL_CHECKIN_ID + " INTEGER PRIMARY KEY AUTOINCREMENT, " +
+                COL_STUDENT_ID + " TEXT, " +
+                COL_SUBJECT_ID + " TEXT, " +
+                COL_CHECKIN_TIME + " TEXT, " +
+                COL_CHECKIN_DATE + " TEXT, " +
+                "FOREIGN KEY(" + COL_STUDENT_ID + ") REFERENCES " + TABLE_STUDENTS + "(" + COL_STUDENT_ID + "), " +
+                "FOREIGN KEY(" + COL_SUBJECT_ID + ") REFERENCES " + TABLE_SUBJECTS + "(" + COL_SUBJECT_ID + "));";
+
+        // TẠO BẢNG EMAIL_RECIPIENTS
+        String CREATE_EMAIL_RECIPIENTS_TABLE = "CREATE TABLE " + TABLE_EMAIL_RECIPIENTS + " (" +
+                COL_EMAIL_ID + " INTEGER PRIMARY KEY AUTOINCREMENT, " +
+                COL_SUBJECT_ID + " TEXT NOT NULL, " +
+                COL_EMAIL_ADDRESS + " TEXT NOT NULL, " +
+                COL_RECIPIENT_NAME + " TEXT, " +
+                COL_ADDED_DATE + " TEXT, " +
+                "UNIQUE(" + COL_SUBJECT_ID + ", " + COL_EMAIL_ADDRESS + "), " +
+                "FOREIGN KEY(" + COL_SUBJECT_ID + ") REFERENCES " + TABLE_SUBJECTS + "(" + COL_SUBJECT_ID + ") ON DELETE CASCADE);";
+
+        db.execSQL(CREATE_ADMIN_TABLE);
+        db.execSQL(CREATE_SUBJECTS_TABLE);
+        db.execSQL(CREATE_STUDENTS_TABLE);
+        db.execSQL(CREATE_ENROLLMENTS_TABLE);
+        db.execSQL(CREATE_CHECKIN_HISTORY_TABLE);
+        db.execSQL(CREATE_EMAIL_RECIPIENTS_TABLE);
+
+        // v21: thêm cột uuid/updated_at, bảng sync_*, trigger
+        applySyncSchema(db);
+    }
+
+    @Override
+    public void onOpen(SQLiteDatabase db) {
+        super.onOpen(db);
+
+        if (!db.isReadOnly()) {
+            db.setForeignKeyConstraintsEnabled(true);
+        }
+    }
+
+    @Override
+    public void onUpgrade(SQLiteDatabase db, int oldVersion, int newVersion) {
+        if (oldVersion < 20) {
+            // Schema quá cũ: giữ hành vi cũ (xóa và tạo lại)
+            db.execSQL("DROP TABLE IF EXISTS " + TABLE_EMAIL_RECIPIENTS);
+            db.execSQL("DROP TABLE IF EXISTS " + TABLE_CHECKIN_HISTORY);
+            db.execSQL("DROP TABLE IF EXISTS " + TABLE_ENROLLMENTS);
+            db.execSQL("DROP TABLE IF EXISTS " + TABLE_STUDENTS);
+            db.execSQL("DROP TABLE IF EXISTS " + TABLE_SUBJECTS);
+            db.execSQL("DROP TABLE IF EXISTS " + TABLE_ADMIN);
+            onCreate(db);
+            return;
+        }
+        // v20 -> v21: chỉ THÊM cột/bảng/trigger, KHÔNG xóa dữ liệu
+        if (oldVersion < 21) {
+            applySyncSchema(db);
+        }
+        if (oldVersion < 22) {
+            migrateAdminPasswordNullable(db);
+        }
+    }
+
+    // ===================== ĐỒNG BỘ (v21) =====================
+
+    /** Kiểm tra bảng đã có cột chưa (để migration chạy lại không bị lỗi). */
+    private boolean hasColumn(SQLiteDatabase db, String table, String column) {
+        Cursor c = db.rawQuery("PRAGMA table_info(" + table + ")", null);
+        try {
+            while (c.moveToNext()) {
+                if (column.equalsIgnoreCase(c.getString(c.getColumnIndex("name")))) return true;
+            }
+            return false;
+        } finally {
+            c.close();
+        }
+    }
+
+    /**
+     * Phục vụ đồng bộ. Dùng chung cho cài mới (onCreate)
+     * và nâng cấp từ v20 (onUpgrade). Chỉ thêm, không xóa dữ liệu cũ.
+     */
+    private void applySyncSchema(SQLiteDatabase db) {
+        // Cờ chặn trigger (tránh vòng lặp khi ghi dữ liệu kéo từ server về)
+        db.execSQL("CREATE TABLE IF NOT EXISTS " + TABLE_SYNC_STATE + "(" +
+                "id INTEGER PRIMARY KEY, is_suppressed INTEGER NOT NULL DEFAULT 0)");
+        db.execSQL("INSERT OR IGNORE INTO " + TABLE_SYNC_STATE + "(id,is_suppressed) VALUES (1,0)");
+
+        // Thông tin đồng bộ khác: last_seq (đã lấy dữ liệu từ server đến đâu), device_id
+        db.execSQL("CREATE TABLE IF NOT EXISTS " + TABLE_SYNC_META + "(meta_key TEXT PRIMARY KEY, meta_value TEXT)");
+        db.execSQL("INSERT OR IGNORE INTO " + TABLE_SYNC_META + "(meta_key,meta_value) VALUES " +
+                "('last_seq','0'),('device_id',lower(hex(randomblob(16))))");
+
+        // Hàng đợi thay đổi chờ gửi lên server
+        db.execSQL("CREATE TABLE IF NOT EXISTS " + TABLE_SYNC_OUTBOX + "(" +
+                "change_id INTEGER PRIMARY KEY AUTOINCREMENT, " +
+                "uuid TEXT NOT NULL, " +
+                "table_name TEXT NOT NULL, " +
+                "operation TEXT NOT NULL, " +
+                "payload TEXT, " +
+                "updated_at INTEGER NOT NULL, " +
+                "status TEXT NOT NULL DEFAULT 'PENDING', " +
+                "retry_count INTEGER NOT NULL DEFAULT 0, " +
+                "last_error TEXT)");
+        db.execSQL("CREATE INDEX IF NOT EXISTS idx_outbox_pending ON " + TABLE_SYNC_OUTBOX +
+                " (status, change_id ASC)");
+
+        for (String t : SYNC_TABLES) {
+            if (!hasColumn(db, t, "uuid")) {
+                db.execSQL("ALTER TABLE " + t + " ADD COLUMN uuid TEXT");
+            }
+            if (!hasColumn(db, t, "updated_at")) {
+                db.execSQL("ALTER TABLE " + t + " ADD COLUMN updated_at INTEGER NOT NULL DEFAULT 0");
+            }
+
+            // Điền uuid cho dữ liệu cũ TRƯỚC khi tạo trigger (để không sinh outbox)
+            db.execSQL("UPDATE " + t + " SET uuid=" + UUID_SQL + ", updated_at=" + NOW_SQL +
+                    " WHERE uuid IS NULL");
+            db.execSQL("CREATE UNIQUE INDEX IF NOT EXISTS idx_" + t + "_uuid ON " + t + "(uuid)");
+
+            // INSERT: code cũ của app không truyền uuid, nên trigger tự gán uuid rồi mới ghi outbox
+            db.execSQL("CREATE TRIGGER IF NOT EXISTS trg_" + t + "_insert AFTER INSERT ON " + t +
+                    " WHEN " + SYNC_ON + " BEGIN " +
+                    "UPDATE " + t + " SET uuid=COALESCE(uuid," + UUID_SQL + "), updated_at=" + NOW_SQL +
+                    " WHERE rowid=NEW.rowid; " +
+                    "INSERT INTO " + TABLE_SYNC_OUTBOX + "(uuid,table_name,operation,updated_at) " +
+                    "SELECT uuid,'" + t + "','INSERT'," + NOW_SQL + " FROM " + t + " WHERE rowid=NEW.rowid; END");
+
+            // UPDATE: cập nhật updated_at của dòng và ghi outbox (điều kiện chống lặp vô hạn)
+            db.execSQL("CREATE TRIGGER IF NOT EXISTS trg_" + t + "_update AFTER UPDATE ON " + t +
+                    " WHEN " + SYNC_ON + " AND NEW.updated_at IS OLD.updated_at AND NEW.uuid IS OLD.uuid BEGIN " +
+                    "UPDATE " + t + " SET updated_at=" + NOW_SQL + " WHERE rowid=NEW.rowid; " +
+                    "INSERT INTO " + TABLE_SYNC_OUTBOX + "(uuid,table_name,operation,updated_at) " +
+                    "VALUES(NEW.uuid,'" + t + "','UPDATE'," + NOW_SQL + "); END");
+
+            // DELETE: ghi lại OLD.uuid để server biết dòng nào đã xóa
+            db.execSQL("CREATE TRIGGER IF NOT EXISTS trg_" + t + "_delete AFTER DELETE ON " + t +
+                    " WHEN " + SYNC_ON + " BEGIN " +
+                    "INSERT INTO " + TABLE_SYNC_OUTBOX + "(uuid,table_name,operation,updated_at) " +
+                    "VALUES(OLD.uuid,'" + t + "','DELETE'," + NOW_SQL + "); END");
+        }
+    }
+
+    /**
+     * Bọc quanh mọi thao tác ghi dữ liệu kéo TỪ SERVER về.
+     * Cờ chặn được bật bên trong transaction nên nếu app crash giữa chừng thì tự rollback.
+     */
+
+    public void applyRemote(Runnable work) {
+        SQLiteDatabase db = getWritableDatabase();
+
+        db.beginTransaction();
+        try {
+            db.execSQL(
+                    "UPDATE sync_state " +
+                            "SET is_suppressed = 1 WHERE id = 1"
+            );
+
+            work.run();
+
+            db.execSQL(
+                    "UPDATE sync_state " +
+                            "SET is_suppressed = 0 WHERE id = 1"
+            );
+
+            db.setTransactionSuccessful();
+        } finally {
+            db.endTransaction();
+        }
+    }
+
+
+    /**
+     * Đưa toàn bộ dữ liệu hiện có vào outbox (trạng thái PENDING).
+     * Gọi khi chuyển Standalone -> Server lần đầu, hoặc sau khi restore backup.
+     */
+    public void enqueueAllForSync() {
+        SQLiteDatabase db = getWritableDatabase();
+        for (String t : SYNC_TABLES) {
+            db.execSQL("INSERT INTO " + TABLE_SYNC_OUTBOX + "(uuid,table_name,operation,updated_at) " +
+                    "SELECT uuid,'" + t + "','INSERT',COALESCE(updated_at," + NOW_SQL + ") FROM " + t +
+                    " WHERE uuid IS NOT NULL AND uuid NOT IN (SELECT uuid FROM " + TABLE_SYNC_OUTBOX +
+                    " WHERE table_name='" + t + "' AND status='PENDING')");
+        }
+    }
+
+    /** Đọc last_seq (đã lấy dữ liệu từ server đến đâu). */
+    public long getLastSeq() {
+        SQLiteDatabase db = getReadableDatabase();
+        Cursor c = db.rawQuery("SELECT meta_value FROM " + TABLE_SYNC_META + " WHERE meta_key='last_seq'", null);
+        try {
+            return c.moveToFirst() ? Long.parseLong(c.getString(0)) : 0L;
+        } finally {
+            c.close();
+        }
+    }
+
+    /** Ghi last_seq sau khi kéo dữ liệu thành công. */
+    public void setLastSeq(long seq) {
+        getWritableDatabase().execSQL("INSERT OR REPLACE INTO " + TABLE_SYNC_META +
+                "(meta_key,meta_value) VALUES('last_seq', ?)", new Object[]{String.valueOf(seq)});
+    }
+
+    /**
+     * Gọi sau khi restore backup: đặt lại con trỏ kéo về 0 và đưa toàn bộ dữ liệu
+     * vào outbox để đẩy lại lên server (gửi lặp vẫn an toàn vì server nhận theo uuid).
+     */
+    public void resetSyncAfterRestore() {
+        setLastSeq(0);
+        enqueueAllForSync();
+    }
+
+    private String hashPassword(String password) {
+        try {
+            MessageDigest digest = MessageDigest.getInstance("SHA-256");
+            byte[] hashBytes = digest.digest(password.getBytes());
+            StringBuilder hexString = new StringBuilder();
+            for (byte b : hashBytes) {
+                String hex = Integer.toHexString(0xff & b);
+                if (hex.length() == 1) hexString.append('0');
+                hexString.append(hex);
+            }
+            return hexString.toString();
+        } catch (NoSuchAlgorithmException e) {
+            e.printStackTrace();
+            return null;
+        }
+    }
+
+    public boolean isSuperAdminExists() {
+        SQLiteDatabase db = this.getReadableDatabase();
+        String query = "SELECT COUNT(*) FROM " + TABLE_ADMIN +
+                " WHERE " + COL_ADMIN_ROLE + " = 'SUPER_ADMIN'";
+        Cursor cursor = db.rawQuery(query, null);
+        boolean exists = false;
+        if (cursor.moveToFirst()) {
+            exists = cursor.getInt(0) > 0;
+        }
+        cursor.close();
+        return exists;
+    }
+
+    public boolean isEmailExists(String email) {
+        SQLiteDatabase db = this.getReadableDatabase();
+        String queryAdmin = "SELECT COUNT(*) FROM " + TABLE_ADMIN + " WHERE " + COL_ADMIN_EMAIL + " = ?";
+        Cursor cursorAdmin = db.rawQuery(queryAdmin, new String[]{email});
+        boolean existsInAdmin = false;
+        if (cursorAdmin.moveToFirst()) {
+            existsInAdmin = cursorAdmin.getInt(0) > 0;
+        }
+        cursorAdmin.close();
+
+        if (existsInAdmin) return true;
+
+        String queryStudent = "SELECT COUNT(*) FROM " + TABLE_STUDENTS + " WHERE " + COL_EMAIL + " = ?";
+        Cursor cursorStudent = db.rawQuery(queryStudent, new String[]{email});
+        boolean existsInStudent = false;
+        if (cursorStudent.moveToFirst()) {
+            existsInStudent = cursorStudent.getInt(0) > 0;
+        }
+        cursorStudent.close();
+        return existsInStudent;
+    }
+
+    public Cursor authenticateUser(String email, String password) {
+        SQLiteDatabase db = this.getReadableDatabase();
+        String hashedPassword = hashPassword(password);
+        if (hashedPassword == null) return null;
+
+        String queryAdmin = "SELECT * FROM " + TABLE_ADMIN +
+                " WHERE " + COL_ADMIN_EMAIL + " = ? AND " + COL_ADMIN_PASSWORD + " = ?";
+        Cursor cursorAdmin = db.rawQuery(queryAdmin, new String[]{email, hashedPassword});
+        if (cursorAdmin.getCount() > 0) {
+            return cursorAdmin;
+        }
+        cursorAdmin.close();
+        return null;
+    }
+
+    public boolean verifyAdminPassword(String email, String password) {
+        SQLiteDatabase db = this.getReadableDatabase();
+        String hashedPassword = hashPassword(password);
+        if (hashedPassword == null) return false;
+
+        String queryPassword = "SELECT COUNT(*) FROM " + TABLE_ADMIN +
+                " WHERE " + COL_ADMIN_EMAIL + " = ? AND " + COL_ADMIN_PASSWORD + " = ?";
+        Cursor cursor = db.rawQuery(queryPassword, new String[]{email, hashedPassword});
+        boolean verified = false;
+        if (cursor.moveToFirst() && cursor.getInt(0) > 0) {
+            verified = true;
+        }
+        cursor.close();
+        return verified;
+    }
+
+    public boolean insertSuperAdmin(String email, String password,
+                                    String fullName, String dob, String phone,
+                                    String gender, String photoPath, String description) {
+        SQLiteDatabase db = this.getWritableDatabase();
+        ContentValues values = new ContentValues();
+        String hashedPassword = hashPassword(password);
+        if (hashedPassword == null) return false;
+
+        String adminId = "SADM_" + System.currentTimeMillis();
+        values.put(COL_ADMIN_ID, adminId);
+        values.put(COL_ADMIN_EMAIL, email);
+        values.put(COL_ADMIN_PASSWORD, hashedPassword);
+        values.put(COL_ADMIN_FULL_NAME, fullName);
+        values.put(COL_ADMIN_DOB, dob);
+        values.put(COL_ADMIN_PHONE, phone);
+        values.put(COL_ADMIN_GENDER, gender);
+        values.put(COL_ADMIN_PHOTO, photoPath);
+        values.put(COL_ADMIN_DESC, description);
+        values.put(COL_ADMIN_ROLE, "SUPER_ADMIN");
+
+        long result = db.insert(TABLE_ADMIN, null, values);
+        return result != -1;
+    }
+
+    public boolean insertAdmin(String email, String password,
+                               String fullName, String dob, String phone,
+                               String gender, String photoPath, String description,
+                               String adminCode) {
+        SQLiteDatabase db = this.getWritableDatabase();
+        ContentValues values = new ContentValues();
+        String hashedPassword = hashPassword(password);
+        if (hashedPassword == null) return false;
+
+        String adminId = "ADM_" + System.currentTimeMillis();
+        values.put(COL_ADMIN_ID, adminId);
+        values.put(COL_ADMIN_EMAIL, email);
+        values.put(COL_ADMIN_PASSWORD, hashedPassword);
+        values.put(COL_ADMIN_FULL_NAME, fullName);
+        values.put(COL_ADMIN_DOB, dob);
+        values.put(COL_ADMIN_PHONE, phone);
+        values.put(COL_ADMIN_GENDER, gender);
+        values.put(COL_ADMIN_PHOTO, photoPath);
+        values.put(COL_ADMIN_DESC, description);
+        values.put(COL_ADMIN_ROLE, "ADMIN");
+        values.put(COL_ADMIN_CODE, adminCode);
+
+        long result = db.insert(TABLE_ADMIN, null, values);
+        return result != -1;
+    }
+
+    public boolean deleteAdmin(String adminId) {
+        SQLiteDatabase db = this.getWritableDatabase();
+        db.beginTransaction();
+        try {
+            ContentValues subjectValues = new ContentValues();
+            subjectValues.putNull(COL_SUBJECT_INSTRUCTOR_ID);
+            subjectValues.put(COL_SUBJECT_STATUS, STATUS_UNASSIGNED);
+            db.update(TABLE_SUBJECTS, subjectValues, COL_SUBJECT_INSTRUCTOR_ID + " = ?", new String[]{adminId});
+
+            int rowsDeleted = db.delete(TABLE_ADMIN, COL_ADMIN_ID + " = ?", new String[]{adminId});
+            db.setTransactionSuccessful();
+            return rowsDeleted > 0;
+        } finally {
+            db.endTransaction();
+        }
+    }
+
+    public Cursor getAllAdmins() {
+        SQLiteDatabase db = this.getReadableDatabase();
+        String query = "SELECT * FROM " + TABLE_ADMIN + " WHERE " + COL_ADMIN_ROLE + " = 'ADMIN'";
+        return db.rawQuery(query, null);
+    }
+
+    public Cursor getAllSubjectsWithInstructor() {
+        SQLiteDatabase db = this.getReadableDatabase();
+        String query = "SELECT s.*, a." + COL_ADMIN_FULL_NAME + " AS instructor_name " +
+                "FROM " + TABLE_SUBJECTS + " s " +
+                "LEFT JOIN " + TABLE_ADMIN + " a ON s." + COL_SUBJECT_INSTRUCTOR_ID + " = a." + COL_ADMIN_ID + " " +
+                "ORDER BY s." + COL_SUBJECT_STATUS + " DESC, s." + COL_SUBJECT_NAME + " ASC";
+        return db.rawQuery(query, null);
+    }
+
+    public Cursor getSubjectsByInstructor(String adminId) {
+        SQLiteDatabase db = this.getReadableDatabase();
+        String query = "SELECT s.*, a." + COL_ADMIN_FULL_NAME + " AS instructor_name " +
+                "FROM " + TABLE_SUBJECTS + " s " +
+                "LEFT JOIN " + TABLE_ADMIN + " a ON s." + COL_SUBJECT_INSTRUCTOR_ID + " = a." + COL_ADMIN_ID + " " +
+                "WHERE s." + COL_SUBJECT_INSTRUCTOR_ID + " = ? " +
+                "ORDER BY s." + COL_SUBJECT_NAME + " ASC";
+        return db.rawQuery(query, new String[]{adminId});
+    }
+
+    public Cursor getAdminByEmail(String email) {
+        SQLiteDatabase db = this.getReadableDatabase();
+        String query = "SELECT * FROM " + TABLE_ADMIN + " WHERE " + COL_ADMIN_EMAIL + " = ?";
+        return db.rawQuery(query, new String[]{email});
+    }
+
+    public boolean updateAdmin(String email, String password,
+                               String fullName, String dob, String phone,
+                               String gender, String photoPath, String description) {
+        SQLiteDatabase db = this.getWritableDatabase();
+        ContentValues values = new ContentValues();
+
+        if (password != null && !password.isEmpty()) {
+            String hashedPassword = hashPassword(password);
+            if (hashedPassword == null) return false;
+            values.put(COL_ADMIN_PASSWORD, hashedPassword);
+        }
+        values.put(COL_ADMIN_FULL_NAME, fullName);
+        values.put(COL_ADMIN_DOB, dob);
+        values.put(COL_ADMIN_PHONE, phone);
+        values.put(COL_ADMIN_GENDER, gender);
+        if (photoPath != null) {
+            values.put(COL_ADMIN_PHOTO, photoPath);
+        }
+        values.put(COL_ADMIN_DESC, description);
+
+        int rowsAffected = db.update(TABLE_ADMIN, values, COL_ADMIN_EMAIL + " = ?", new String[]{email});
+        return rowsAffected > 0;
+    }
+
+    public boolean updateAdminEmail(String oldEmail, String newEmail) {
+        SQLiteDatabase db = this.getWritableDatabase();
+        ContentValues values = new ContentValues();
+        values.put(COL_ADMIN_EMAIL, newEmail);
+        int rowsAffected = db.update(TABLE_ADMIN, values, COL_ADMIN_EMAIL + " = ?", new String[]{oldEmail});
+        return rowsAffected > 0;
+    }
+
+    public boolean isFirstLogin(String email) {
+        SQLiteDatabase db = this.getReadableDatabase();
+        Cursor cursor = db.rawQuery("SELECT " + COL_ADMIN_IS_FIRST_LOGIN + " FROM " + TABLE_ADMIN + " WHERE " + COL_ADMIN_EMAIL + " = ?", new String[]{email});
+        boolean isFirst = true;
+        if (cursor != null && cursor.moveToFirst()) {
+            int columnIndex = cursor.getColumnIndex(COL_ADMIN_IS_FIRST_LOGIN);
+            if (columnIndex != -1) {
+                isFirst = cursor.getInt(columnIndex) == 1;
+            }
+            cursor.close();
+        }
+        return isFirst;
+    }
+
+    public boolean markFirstLoginComplete(String email) {
+        SQLiteDatabase db = this.getWritableDatabase();
+        ContentValues values = new ContentValues();
+        values.put(COL_ADMIN_IS_FIRST_LOGIN, 0);
+        int rowsAffected = db.update(TABLE_ADMIN, values, COL_ADMIN_EMAIL + " = ?", new String[]{email});
+        return rowsAffected > 0;
+    }
+
+    public String getAdminIdByEmail(String email) {
+        SQLiteDatabase db = this.getReadableDatabase();
+        Cursor cursor = db.rawQuery("SELECT " + COL_ADMIN_ID + " FROM " + TABLE_ADMIN + " WHERE " + COL_ADMIN_EMAIL + " = ?", new String[]{email});
+        String adminId = null;
+        if (cursor != null && cursor.moveToFirst()) {
+            int columnIndex = cursor.getColumnIndex(COL_ADMIN_ID);
+            if (columnIndex != -1) {
+                adminId = cursor.getString(columnIndex);
+            }
+            cursor.close();
+        }
+        return adminId;
+    }
+
+    public String getEmailByAdminId(String adminId) {
+        SQLiteDatabase db = this.getReadableDatabase();
+        Cursor cursor = db.rawQuery("SELECT " + COL_ADMIN_EMAIL + " FROM " + TABLE_ADMIN + " WHERE " + COL_ADMIN_ID + " = ?", new String[]{adminId});
+        String email = null;
+        if (cursor != null && cursor.moveToFirst()) {
+            int columnIndex = cursor.getColumnIndex(COL_ADMIN_EMAIL);
+            if (columnIndex != -1) {
+                email = cursor.getString(columnIndex);
+            }
+            cursor.close();
+        }
+        return email;
+    }
+
+    public boolean updateAdminIrisEnrollment(String email) {
+        SQLiteDatabase db = this.getWritableDatabase();
+        ContentValues values = new ContentValues();
+        values.put(COL_ADMIN_HAS_IRIS, 1);
+        int rowsAffected = db.update(TABLE_ADMIN, values, COL_ADMIN_EMAIL + " = ?", new String[]{email});
+        return rowsAffected > 0;
+    }
+
+    public boolean hasAdminEnrolledIris(String email) {
+        SQLiteDatabase db = this.getReadableDatabase();
+        Cursor cursor = db.rawQuery("SELECT " + COL_ADMIN_HAS_IRIS + " FROM " + TABLE_ADMIN + " WHERE " + COL_ADMIN_EMAIL + " = ?", new String[]{email});
+        boolean hasIris = false;
+        if (cursor != null && cursor.moveToFirst()) {
+            int columnIndex = cursor.getColumnIndex(COL_ADMIN_HAS_IRIS);
+            if (columnIndex != -1) {
+                hasIris = cursor.getInt(columnIndex) == 1;
+            }
+            cursor.close();
+        }
+        return hasIris;
+    }
+
+    public boolean hasAnyAdminWithIris() {
+        SQLiteDatabase db = this.getReadableDatabase();
+        Cursor cursor = db.rawQuery("SELECT COUNT(*) FROM " + TABLE_ADMIN + " WHERE " + COL_ADMIN_HAS_IRIS + " = 1", null);
+        boolean hasAny = false;
+        if (cursor != null && cursor.moveToFirst()) {
+            hasAny = cursor.getInt(0) > 0;
+            cursor.close();
+        }
+        return hasAny;
+    }
+
+    public String getAdminRole(String email) {
+        SQLiteDatabase db = this.getReadableDatabase();
+        Cursor cursor = db.rawQuery("SELECT " + COL_ADMIN_ROLE + " FROM " + TABLE_ADMIN + " WHERE " + COL_ADMIN_EMAIL + " = ?", new String[]{email});
+        String role = null;
+        if (cursor != null && cursor.moveToFirst()) {
+            int idx = cursor.getColumnIndex(COL_ADMIN_ROLE);
+            if (idx != -1) role = cursor.getString(idx);
+            cursor.close();
+        }
+        return role;
+    }
+
+    /**
+     * Lấy role của Admin theo admin_id (dùng để lọc khi check trùng khuôn mặt theo role)
+     */
+    public String getRoleByAdminId(String adminId) {
+        SQLiteDatabase db = this.getReadableDatabase();
+        Cursor cursor = db.rawQuery(
+                "SELECT " + COL_ADMIN_ROLE + " FROM " + TABLE_ADMIN +
+                        " WHERE " + COL_ADMIN_ID + " = ?",
+                new String[]{adminId}
+        );
+        String role = null;
+        if (cursor != null && cursor.moveToFirst()) {
+            int idx = cursor.getColumnIndex(COL_ADMIN_ROLE);
+            if (idx != -1) role = cursor.getString(idx);
+            cursor.close();
+        }
+        return role;
+    }
+
+    public long createSubject(String subjectId, String subjectName, String timeSlot,
+                              String createdById, String instructorId) {
+        SQLiteDatabase db = this.getWritableDatabase();
+        ContentValues values = new ContentValues();
+        values.put(COL_SUBJECT_ID, subjectId);
+        values.put(COL_SUBJECT_NAME, subjectName);
+        values.put(COL_TIME_SLOT, timeSlot);
+        values.put(COL_SUBJECT_CREATED_BY, createdById);
+        if (instructorId != null) {
+            values.put(COL_SUBJECT_INSTRUCTOR_ID, instructorId);
+            values.put(COL_SUBJECT_STATUS, STATUS_ASSIGNED);
+        } else {
+            values.putNull(COL_SUBJECT_INSTRUCTOR_ID);
+            values.put(COL_SUBJECT_STATUS, STATUS_UNASSIGNED);
+        }
+        values.put(COL_SUBJECT_CREATED_AT, new java.text.SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ss", java.util.Locale.getDefault()).format(new java.util.Date()));
+
+        java.text.SimpleDateFormat semesterSdf = new java.text.SimpleDateFormat("dd/MM/yyyy", java.util.Locale.getDefault());
+        java.util.Calendar cal = java.util.Calendar.getInstance();
+        String semesterStart = semesterSdf.format(cal.getTime());
+        cal.add(java.util.Calendar.DAY_OF_YEAR, 90);
+        String semesterEnd = semesterSdf.format(cal.getTime());
+
+        values.put(COL_SUBJECT_SEMESTER_START, semesterStart);
+        values.put(COL_SUBJECT_SEMESTER_END, semesterEnd);
+
+        return db.insert(TABLE_SUBJECTS, null, values);
+    }
+
+    public String[] getSubjectSemesterRange(String subjectId) {
+        SQLiteDatabase db = this.getReadableDatabase();
+        Cursor cursor = db.rawQuery("SELECT " + COL_SUBJECT_SEMESTER_START + ", " + COL_SUBJECT_SEMESTER_END + " FROM " + TABLE_SUBJECTS + " WHERE " + COL_SUBJECT_ID + " = ?", new String[]{subjectId});
+        String[] result = null;
+        if (cursor != null && cursor.moveToFirst()) {
+            result = new String[]{cursor.getString(0), cursor.getString(1)};
+            cursor.close();
+        }
+        return result;
+    }
+
+    public boolean assignInstructor(String subjectId, String instructorId) {
+        SQLiteDatabase db = this.getWritableDatabase();
+        ContentValues values = new ContentValues();
+        if (instructorId != null) {
+            values.put(COL_SUBJECT_INSTRUCTOR_ID, instructorId);
+            values.put(COL_SUBJECT_STATUS, STATUS_ASSIGNED);
+        } else {
+            values.putNull(COL_SUBJECT_INSTRUCTOR_ID);
+            values.put(COL_SUBJECT_STATUS, STATUS_UNASSIGNED);
+        }
+        int rows = db.update(TABLE_SUBJECTS, values, COL_SUBJECT_ID + " = ?", new String[]{subjectId});
+        return rows > 0;
+    }
+
+    public boolean isSubjectOwnedByAdmin(String subjectId, String adminId) {
+        SQLiteDatabase db = this.getReadableDatabase();
+        Cursor cursor = db.rawQuery("SELECT 1 FROM " + TABLE_SUBJECTS + " WHERE " + COL_SUBJECT_ID + " = ? AND " + COL_SUBJECT_INSTRUCTOR_ID + " = ?", new String[]{subjectId, adminId});
+        boolean owned = cursor.moveToFirst();
+        cursor.close();
+        return owned;
+    }
+
+    public Cursor getSubjectById(String subjectId) {
+        SQLiteDatabase db = this.getReadableDatabase();
+        String query = "SELECT s.*, a." + COL_ADMIN_FULL_NAME + " AS instructor_name " +
+                "FROM " + TABLE_SUBJECTS + " s " +
+                "LEFT JOIN " + TABLE_ADMIN + " a ON s." + COL_SUBJECT_INSTRUCTOR_ID + " = a." + COL_ADMIN_ID + " " +
+                "WHERE s." + COL_SUBJECT_ID + " = ?";
+        return db.rawQuery(query, new String[]{subjectId});
+    }
+
+    public boolean updateSubjectBySuperAdmin(String subjectId, String subjectName,
+                                             String timeSlot, String instructorId) {
+        SQLiteDatabase db = this.getWritableDatabase();
+        ContentValues values = new ContentValues();
+        values.put(COL_SUBJECT_NAME, subjectName);
+        values.put(COL_TIME_SLOT, timeSlot);
+        if (instructorId != null) {
+            values.put(COL_SUBJECT_INSTRUCTOR_ID, instructorId);
+            values.put(COL_SUBJECT_STATUS, STATUS_ASSIGNED);
+        } else {
+            values.putNull(COL_SUBJECT_INSTRUCTOR_ID);
+            values.put(COL_SUBJECT_STATUS, STATUS_UNASSIGNED);
+        }
+        int rows = db.update(TABLE_SUBJECTS, values, COL_SUBJECT_ID + " = ?", new String[]{subjectId});
+        return rows > 0;
+    }
+
+    public boolean updateSubjectByAdmin(String subjectId, String adminId,
+                                        String subjectName, String timeSlot) {
+        if (!isSubjectOwnedByAdmin(subjectId, adminId)) {
+            return false;
+        }
+        SQLiteDatabase db = this.getWritableDatabase();
+        ContentValues values = new ContentValues();
+        values.put(COL_SUBJECT_NAME, subjectName);
+        values.put(COL_TIME_SLOT, timeSlot);
+        int rows = db.update(TABLE_SUBJECTS, values, COL_SUBJECT_ID + " = ? AND " + COL_SUBJECT_INSTRUCTOR_ID + " = ?", new String[]{subjectId, adminId});
+        return rows > 0;
+    }
+
+    public boolean isAdminIdExists(String adminId) {
+        SQLiteDatabase db = this.getReadableDatabase();
+        Cursor cursor = db.rawQuery("SELECT 1 FROM " + TABLE_ADMIN + " WHERE " + COL_ADMIN_ID + " = ?", new String[]{adminId});
+        boolean exists = cursor.moveToFirst();
+        cursor.close();
+        return exists;
+    }
+
+    public String verifyCheckinPassword(String studentId, String password) {
+        SQLiteDatabase db = this.getReadableDatabase();
+        Cursor cursor = db.rawQuery("SELECT " + COL_FULL_NAME + " FROM " + TABLE_STUDENTS + " WHERE " + COL_STUDENT_ID + " = ? AND " + COL_CHECKIN_PASSWORD + " = ?", new String[]{studentId, password});
+        String name = null;
+        if (cursor != null && cursor.moveToFirst()) {
+            name = cursor.getString(0);
+            cursor.close();
+        }
+        return name;
+    }
+
+    public Cursor getAllStudents() {
+        SQLiteDatabase db = this.getReadableDatabase();
+        return db.rawQuery("SELECT * FROM " + TABLE_STUDENTS + " ORDER BY " + COL_FULL_NAME, null);
+    }
+
+    /**
+     * XÓA VĨNH VIỄN sinh viên khỏi toàn bộ hệ thống.
+     * Sẽ xóa luôn dữ liệu ghi danh (enrollments) và lịch sử điểm danh
+     * (checkin_history) của sinh viên này ở TẤT CẢ các môn học.
+     *
+     * CHỈ dùng cho màn hình "Tất cả sinh viên" (isAllStudentsMode = true).
+     * Nếu muốn xóa sinh viên khỏi MỘT môn học cụ thể (mà vẫn giữ ở các
+     * môn khác), hãy dùng {@link #unenrollStudentFromSubject(String, String)}.
+     */
+    public boolean deleteStudent(String studentId) {
+        SQLiteDatabase db = this.getWritableDatabase();
+        db.beginTransaction();
+        try {
+            db.delete(TABLE_CHECKIN_HISTORY, COL_STUDENT_ID + " = ?", new String[]{studentId});
+            db.delete(TABLE_ENROLLMENTS, COL_STUDENT_ID + " = ?", new String[]{studentId});
+            int rows = db.delete(TABLE_STUDENTS, COL_STUDENT_ID + " = ?", new String[]{studentId});
+            db.setTransactionSuccessful();
+            return rows > 0;
+        } finally {
+            db.endTransaction();
+        }
+    }
+
+    /**
+     * Hủy ghi danh sinh viên khỏi MỘT môn học cụ thể.
+     * Chỉ xóa bản ghi trong enrollments và lịch sử điểm danh (checkin_history)
+     * ứng với môn học đó — KHÔNG động tới các môn học khác và KHÔNG xóa
+     * bản ghi sinh viên khỏi bảng students.
+     *
+     * Đây là hàm nên dùng khi bấm nút "Xóa" sinh viên từ danh sách của
+     * một môn học cụ thể (subject_id != null).
+     */
+    public boolean unenrollStudentFromSubject(String studentId, String subjectId) {
+        SQLiteDatabase db = this.getWritableDatabase();
+        db.beginTransaction();
+        try {
+            // Xóa lịch sử điểm danh của sinh viên CHỈ trong môn học này
+            db.delete(TABLE_CHECKIN_HISTORY,
+                    COL_STUDENT_ID + " = ? AND " + COL_SUBJECT_ID + " = ?",
+                    new String[]{studentId, subjectId});
+
+            // Xóa ghi danh của sinh viên CHỈ trong môn học này
+            int rows = db.delete(TABLE_ENROLLMENTS,
+                    COL_STUDENT_ID + " = ? AND " + COL_SUBJECT_ID + " = ?",
+                    new String[]{studentId, subjectId});
+
+            db.setTransactionSuccessful();
+            return rows > 0;
+        } finally {
+            db.endTransaction();
+        }
+    }
+
+    public Cursor getAbsentStudents(String subjectId, String startDate, String endDate) {
+        SQLiteDatabase db = this.getReadableDatabase();
+        StringBuilder sql = new StringBuilder(
+                "SELECT s." + COL_STUDENT_ID + ", s." + COL_FULL_NAME +
+                        " FROM " + TABLE_ENROLLMENTS + " e" +
+                        " JOIN " + TABLE_STUDENTS + " s ON e." + COL_STUDENT_ID + " = s." + COL_STUDENT_ID +
+                        " WHERE e." + COL_SUBJECT_ID + " = ?" +
+                        " AND s." + COL_STUDENT_ID + " NOT IN (" +
+                        "   SELECT h." + COL_STUDENT_ID + " FROM " + TABLE_CHECKIN_HISTORY + " h" +
+                        "   WHERE h." + COL_SUBJECT_ID + " = ?"
+        );
+
+        java.util.List<String> args = new java.util.ArrayList<>();
+        args.add(subjectId);
+        args.add(subjectId);
+
+        if (startDate != null && endDate != null) {
+            sql.append(" AND h.").append(COL_CHECKIN_DATE).append(" BETWEEN ? AND ?");
+            args.add(startDate);
+            args.add(endDate);
+        }
+
+        sql.append(" )").append(" ORDER BY s.").append(COL_FULL_NAME).append(" ASC");
+        return db.rawQuery(sql.toString(), args.toArray(new String[0]));
+    }
+
+    public Cursor getStudentCheckinHistory(String subjectId, String studentId) {
+        SQLiteDatabase db = this.getReadableDatabase();
+        String query = "SELECT " + COL_CHECKIN_DATE + ", " + COL_CHECKIN_TIME +
+                " FROM " + TABLE_CHECKIN_HISTORY +
+                " WHERE " + COL_SUBJECT_ID + " = ? AND " + COL_STUDENT_ID + " = ?" +
+                " ORDER BY " + COL_CHECKIN_DATE + " DESC";
+        return db.rawQuery(query, new String[]{subjectId, studentId});
+    }
+
+    public int getTotalSessionCount(String subjectId) {
+        SQLiteDatabase db = this.getReadableDatabase();
+        Cursor cursor = db.rawQuery("SELECT COUNT(DISTINCT " + COL_CHECKIN_DATE + ") FROM " + TABLE_CHECKIN_HISTORY + " WHERE " + COL_SUBJECT_ID + " = ?", new String[]{subjectId});
+        int count = 0;
+        if (cursor.moveToFirst()) {
+            count = cursor.getInt(0);
+        }
+        cursor.close();
+        return count;
+    }
+
+
+
+
+    private void migrateAdminPasswordNullable(SQLiteDatabase db) {
+
+        // 1. Kiểm tra password đã cho phép NULL chưa
+        if (!hasColumn(db, "admin", "password")) {
+            throw new IllegalStateException("Missing admin.password");
+        }
+
+        try (Cursor cursor = db.rawQuery("PRAGMA table_info(admin)", null)) {
+            while (cursor.moveToNext()) {
+                String column = cursor.getString(
+                        cursor.getColumnIndexOrThrow("name")
+                );
+
+                if ("password".equalsIgnoreCase(column)) {
+                    int notNull = cursor.getInt(
+                            cursor.getColumnIndexOrThrow("notnull")
+                    );
+
+                    if (notNull == 0) {
+                        return;
+                    }
+                    break;
+                }
+            }
+        }
+
+        // 2. Không được bật foreign_keys trong transaction này.
+        // onConfigure() phải tắt FK trước khi SQLiteOpenHelper
+        // bắt đầu transaction nâng cấp.
+
+        // 3. Xóa các trigger admin cũ
+        db.execSQL("DROP TRIGGER IF EXISTS trg_admin_insert");
+        db.execSQL("DROP TRIGGER IF EXISTS trg_admin_update");
+        db.execSQL("DROP TRIGGER IF EXISTS trg_admin_delete");
+
+        // 4. Tạo bảng admin_v22 với password nullable
+        db.execSQL(
+                "CREATE TABLE admin_v22 (" +
+                        "admin_id TEXT PRIMARY KEY, " +
+                        "email TEXT UNIQUE NOT NULL, " +
+                        "password TEXT, " +
+                        "full_name TEXT NOT NULL, " +
+                        "date_of_birth TEXT, " +
+                        "phone TEXT, " +
+                        "gender TEXT, " +
+                        "photo_path TEXT, " +
+                        "description TEXT, " +
+                        "role TEXT NOT NULL DEFAULT 'ADMIN', " +
+                        "admin_code TEXT, " +
+                        "reset_token TEXT, " +
+                        "expire_at INTEGER, " +
+                        "is_first_login INTEGER DEFAULT 1, " +
+                        "has_iris INTEGER DEFAULT 0, " +
+                        "uuid TEXT, " +
+                        "updated_at INTEGER NOT NULL DEFAULT 0" +
+                        ")"
+        );
+
+        // 5. Sao chép toàn bộ dữ liệu admin cũ
+        db.execSQL(
+                "INSERT INTO admin_v22 (" +
+                        "admin_id,email,password,full_name,date_of_birth," +
+                        "phone,gender,photo_path,description,role,admin_code," +
+                        "reset_token,expire_at,is_first_login,has_iris,uuid,updated_at" +
+                        ") SELECT " +
+                        "admin_id,email,password,full_name,date_of_birth," +
+                        "phone,gender,photo_path,description,role,admin_code," +
+                        "reset_token,expire_at,is_first_login,has_iris,uuid,updated_at " +
+                        "FROM admin"
+        );
+
+        // 6. Xóa bảng cũ, đổi tên bảng mới
+        db.execSQL("DROP TABLE admin");
+        db.execSQL("ALTER TABLE admin_v22 RENAME TO admin");
+
+        // 7. Tạo lại unique index
+        db.execSQL(
+                "CREATE UNIQUE INDEX IF NOT EXISTS idx_admin_uuid ON admin(uuid)"
+        );
+
+        // 8. Tạo lại trigger đồng bộ admin
+        createAdminSyncTriggers(db);
+
+        // 9. Kiểm tra khóa ngoại
+        verifyForeignKeys(db);
+    }
+
+
+
+
+    private void createAdminSyncTriggers(SQLiteDatabase db) {
+
+        String t = "admin";
+
+        db.execSQL(
+                "CREATE TRIGGER IF NOT EXISTS trg_admin_insert " +
+                        "AFTER INSERT ON admin " +
+                        "WHEN " + SYNC_ON + " BEGIN " +
+                        "UPDATE admin SET uuid=COALESCE(uuid," + UUID_SQL + "), " +
+                        "updated_at=" + NOW_SQL + " WHERE rowid=NEW.rowid; " +
+                        "INSERT INTO sync_outbox(uuid,table_name,operation,updated_at) " +
+                        "SELECT uuid,'admin','INSERT'," + NOW_SQL +
+                        " FROM admin WHERE rowid=NEW.rowid; END"
+        );
+
+        db.execSQL(
+                "CREATE TRIGGER IF NOT EXISTS trg_admin_update " +
+                        "AFTER UPDATE ON admin " +
+                        "WHEN " + SYNC_ON +
+                        " AND NEW.updated_at IS OLD.updated_at " +
+                        "AND NEW.uuid IS OLD.uuid " +
+                        "BEGIN " +
+                        "UPDATE admin SET updated_at = " + NOW_SQL +
+                        " WHERE rowid = NEW.rowid; " +
+                        "INSERT INTO sync_outbox " +
+                        "(uuid, table_name, operation, updated_at) " +
+                        "VALUES (NEW.uuid, 'admin', 'UPDATE', " + NOW_SQL + "); " +
+                        "END"
+        );
+
+        db.execSQL(
+                "CREATE TRIGGER IF NOT EXISTS trg_admin_delete " +
+                        "AFTER DELETE ON admin " +
+                        "WHEN " + SYNC_ON + " BEGIN " +
+                        "INSERT INTO sync_outbox(uuid,table_name,operation,updated_at) " +
+                        "VALUES(OLD.uuid,'admin','DELETE'," + NOW_SQL + "); END"
+        );
+    }
+
+    @Override
+    public void onConfigure(SQLiteDatabase db) {
+        super.onConfigure(db);
+
+        // Tắt FK trước transaction nâng cấp v21 -> v22.
+        // Các database đã ở v22 vẫn bật FK bình thường.
+        db.setForeignKeyConstraintsEnabled(db.getVersion() >= 22);
+    }
+
+
+    private void verifyForeignKeys(SQLiteDatabase db) {
+        try (Cursor cursor = db.rawQuery(
+                "PRAGMA foreign_key_check", null)) {
+
+            if (cursor.moveToFirst()) {
+                String table = cursor.getString(0);
+                long rowId = cursor.getLong(1);
+
+                throw new IllegalStateException(
+                        "Foreign key violation: table="
+                                + table + ", rowid=" + rowId
+                );
+            }
+        }
+    }
+
+}
