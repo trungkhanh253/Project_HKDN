@@ -1,5 +1,6 @@
 import csv
 import io
+import pandas as pd
 from app import create_app, db
 from app.models import Admin, Subject, Student, Enrollment
 from app.repositories.base_repository import BaseRepository
@@ -8,7 +9,7 @@ from app.auth import hash_password_sha256
 
 def process_csv_import(csv_content: str, import_type: str = None, default_subject_id: str = None) -> dict:
     """
-    Hàm xử lý import CSV chạy trên RQ Worker (hoặc trực tiếp).
+    Hàm xử lý import CSV chạy trên RQ Worker (hoặc trực tiếp) sử dụng pandas.
     Hỗ trợ 3 loại dữ liệu:
     - students (mặc định): student_id, full_name, [phone, email, checkin_password, photo_path, subject_id, class_name]
     - subjects: subject_id, subject_name, [time_slot, created_by, instructor_id, subject_status, semester_start_date, semester_end_date]
@@ -23,11 +24,18 @@ def process_csv_import(csv_content: str, import_type: str = None, default_subjec
         if csv_content.startswith("\ufeff"):
             csv_content = csv_content.lstrip("\ufeff")
 
-        reader = csv.DictReader(io.StringIO(csv_content.strip()))
-        if not reader.fieldnames:
-            raise ValueError("File CSV thiếu dòng tiêu đề (header).")
+        try:
+            # Đọc file CSV bằng pandas, ép kiểu chuỗi toàn bộ để bảo toàn số 0 ở đầu
+            df = pd.read_csv(io.StringIO(csv_content.strip()), dtype=str).fillna('')
+        except Exception as e:
+            raise ValueError(f"Lỗi đọc file CSV: {str(e)}")
 
-        headers = [h.strip().lower() for h in reader.fieldnames if h]
+        if df.empty and len(df.columns) == 0:
+            raise ValueError("File CSV thiếu dòng tiêu đề (header) hoặc không có dữ liệu.")
+
+        # Chuẩn hóa tên cột
+        df.columns = [str(h).strip().lower() for h in df.columns if h is not None]
+        headers = list(df.columns)
 
         # Tự động nhận diện loại CSV nếu client không truyền trường `type`
         resolved_type = (import_type or "").strip().lower()
@@ -39,6 +47,20 @@ def process_csv_import(csv_content: str, import_type: str = None, default_subjec
             else:
                 resolved_type = "students"
 
+        # Kiểm tra cột bắt buộc tùy theo loại import
+        if resolved_type in ("student", "students"):
+            required_cols = {"student_id", "full_name"}
+        elif resolved_type in ("subject", "subjects"):
+            required_cols = {"subject_id", "subject_name"} if "subject_id" in headers else {"subject_code", "subject_name"}
+        elif resolved_type in ("admin", "admins", "lecturer", "lecturers"):
+            required_cols = {"email", "full_name"}
+        else:
+            required_cols = set()
+
+        missing_cols = required_cols - set(headers)
+        if missing_cols:
+            raise ValueError(f"Thiếu các cột bắt buộc: {', '.join(sorted(missing_cols))}")
+
         total_rows = 0
         imported = 0
         updated = 0
@@ -46,12 +68,13 @@ def process_csv_import(csv_content: str, import_type: str = None, default_subjec
         errors = []
         now = BaseRepository.get_current_time()
 
-        for idx, raw_row in enumerate(reader, start=2):
-            row = {
-                (k.strip().lower() if k else ""): (v.strip() if isinstance(v, str) else "")
-                for k, v in raw_row.items()
-                if k is not None
-            }
+        # Set để phát hiện trùng lặp khóa ngay trong file CSV
+        seen_keys = set()
+
+        for idx, raw_row in df.iterrows():
+            line_num = idx + 2  # idx bắt đầu từ 0, dòng 1 là header -> dòng dữ liệu bắt đầu từ 2
+            row = {str(k).strip().lower(): str(v).strip() if v is not None else "" for k, v in raw_row.items() if k is not None}
+            
             if not any(row.values()):
                 continue
 
@@ -62,8 +85,14 @@ def process_csv_import(csv_content: str, import_type: str = None, default_subjec
                     full_name = row.get("full_name", "")
                     if not student_id or not full_name:
                         skipped += 1
-                        errors.append(f"Dòng {idx}: Thiếu student_id hoặc full_name.")
+                        errors.append(f"Dòng {line_num}: Thiếu student_id hoặc full_name.")
                         continue
+
+                    if student_id in seen_keys:
+                        skipped += 1
+                        errors.append(f"Dòng {line_num}: Trùng mã sinh viên '{student_id}' ngay trong file CSV.")
+                        continue
+                    seen_keys.add(student_id)
 
                     student = Student.query.filter_by(student_id=student_id).first()
                     is_new = student is None
@@ -89,7 +118,7 @@ def process_csv_import(csv_content: str, import_type: str = None, default_subjec
                     student.deleted_at = None
                     db.session.flush()
 
-                    # Nếu có subject_id trong dòng CSV hoặc truyền qua form-data thì tự động ghi danh vào enrollments
+                    # Tự động ghi danh vào enrollments nếu có subject_id
                     subj_id = row.get("subject_id") or default_subject_id
                     if subj_id and Subject.query.filter_by(subject_id=subj_id).first():
                         enrollment = Enrollment.query.filter_by(
@@ -119,8 +148,14 @@ def process_csv_import(csv_content: str, import_type: str = None, default_subjec
                     subject_name = row.get("subject_name", "")
                     if not subject_id or not subject_name:
                         skipped += 1
-                        errors.append(f"Dòng {idx}: Thiếu subject_id hoặc subject_name.")
+                        errors.append(f"Dòng {line_num}: Thiếu subject_id hoặc subject_name.")
                         continue
+
+                    if subject_id in seen_keys:
+                        skipped += 1
+                        errors.append(f"Dòng {line_num}: Trùng mã môn học '{subject_id}' ngay trong file CSV.")
+                        continue
+                    seen_keys.add(subject_id)
 
                     subject = Subject.query.filter_by(subject_id=subject_id).first()
                     is_new = subject is None
@@ -157,8 +192,15 @@ def process_csv_import(csv_content: str, import_type: str = None, default_subjec
                     admin_id = row.get("admin_id") or (f"ADM_{email.split('@')[0]}" if email else "")
                     if not admin_id or not email or not full_name:
                         skipped += 1
-                        errors.append(f"Dòng {idx}: Thiếu admin_id, email hoặc full_name.")
+                        errors.append(f"Dòng {line_num}: Thiếu admin_id, email hoặc full_name.")
                         continue
+
+                    if admin_id in seen_keys or email in seen_keys:
+                        skipped += 1
+                        errors.append(f"Dòng {line_num}: Trùng admin_id hoặc email ngay trong file CSV.")
+                        continue
+                    seen_keys.add(admin_id)
+                    seen_keys.add(email)
 
                     admin = Admin.query.filter(
                         (Admin.admin_id == admin_id) | (Admin.email == email)
@@ -202,7 +244,7 @@ def process_csv_import(csv_content: str, import_type: str = None, default_subjec
 
             except Exception as row_exc:
                 skipped += 1
-                errors.append(f"Dòng {idx}: {str(row_exc)}")
+                errors.append(f"Dòng {line_num}: {str(row_exc)}")
 
         db.session.commit()
         return {
@@ -213,5 +255,3 @@ def process_csv_import(csv_content: str, import_type: str = None, default_subjec
             "skipped": skipped,
             "errors": errors,
         }
-
-

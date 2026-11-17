@@ -76,11 +76,13 @@ def create_app():
     app.config["SECRET_KEY"] = secret_key
 
     # CORS - Cho phép nhóm Web truy cập Flask API
-    cors_origins = [
-        origin.strip()
-        for origin in os.getenv("CORS_ORIGINS", "").split(",")
-        if origin.strip()
-    ]
+    # CORS - Cấu hình an toàn qua thư viện Flask-CORS
+    raw_cors = os.getenv("CORS_ORIGINS", "")
+    if raw_cors:
+        cors_origins = [origin.strip() for origin in raw_cors.split(",") if origin.strip()]
+    else:
+        # Nếu chưa cấu hình biến môi trường, mặc định cho phép các cổng local phát triển thông dụng
+        cors_origins = ["http://localhost:3000", "http://localhost:5173", "http://127.0.0.1:3000", "http://127.0.0.1:5173"]
 
     if CORS is not None:
         CORS(
@@ -94,23 +96,7 @@ def create_app():
             allow_headers=["Content-Type", "Authorization"],
             supports_credentials=False,
         )
-
-    # @app.after_request
-    # def add_cors_headers(response):
-    #     req_origin = request.headers.get("Origin")
-    #     if req_origin and ("*" in cors_origins or req_origin in cors_origins):
-    #         response.headers["Access-Control-Allow-Origin"] = req_origin
-    #     else:
-    #         response.headers["Access-Control-Allow-Origin"] = "*"
-    #     response.headers["Access-Control-Allow-Headers"] = "Content-Type,Authorization,X-Requested-With"
-    #     response.headers["Access-Control-Allow-Methods"] = "GET,POST,PUT,DELETE,PATCH,OPTIONS"
-    #     return response
-
-    @app.route("/", defaults={"path": ""}, methods=["OPTIONS"])
-    @app.route("/<path:path>", methods=["OPTIONS"])
-    def handle_options_preflight(path=""):
-        return Response("", status=204)
-
+        
     db.init_app(app)
 
     migrate.init_app(app, db)  
