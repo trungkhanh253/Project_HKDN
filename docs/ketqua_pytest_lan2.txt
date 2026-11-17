@@ -1,0 +1,43 @@
+﻿........................................................................ [ 59%]
+xX....FF....................F...ssssss...ssssssss                        [100%]
+================================== FAILURES ===================================
+______________________ test_cors_rejects_unknown_origin _______________________
+tests\test_security.py:235: in test_cors_rejects_unknown_origin
+    assert "Access-Control-Allow-Origin" not in r.headers
+E   AssertionError: assert 'Access-Control-Allow-Origin' not in {'Server': 'gunicorn', 'Date': 'Sun, 15 Nov 2026 13:53:23 GMT', 'Connection': 'keep-alive', 'Content-Type': 'text/html...rization,X-Requested-With', 'Access-Control-Allow-Methods': 'GET,POST,PUT,DELETE,PATCH,OPTIONS', 'Content-Length': '0'}
+E    +  where {'Server': 'gunicorn', 'Date': 'Sun, 15 Nov 2026 13:53:23 GMT', 'Connection': 'keep-alive', 'Content-Type': 'text/html...rization,X-Requested-With', 'Access-Control-Allow-Methods': 'GET,POST,PUT,DELETE,PATCH,OPTIONS', 'Content-Length': '0'} = <Response [200]>.headers
+__________ test_sync_serialization_does_not_expose_sensitive_fields ___________
+tests\test_security.py:238: in test_sync_serialization_does_not_expose_sensitive_fields
+    from app.repositories.sync_repository import SyncRepository
+app\__init__.py:9: in <module>
+    from flask_sqlalchemy import SQLAlchemy
+E   ModuleNotFoundError: No module named 'flask_sqlalchemy'
+____________________ test_unknown_route_returns_json_error ____________________
+tests\test_sync_edge_cases.py:164: in test_unknown_route_returns_json_error
+    assert r.status_code == 404
+E   assert 405 == 404
+E    +  where 405 = <Response [405]>.status_code
+============================== warnings summary ===============================
+..\..\AppData\Local\Programs\Python\Python312\Lib\site-packages\anyio\pytest_plugin.py:14
+  C:\Users\Dat\AppData\Local\Programs\Python\Python312\Lib\site-packages\anyio\pytest_plugin.py:14: PytestRemovedIn10Warning: _pytest.python.CallSpec2 has been renamed to CallSpec.
+  The CallSpec2 alias will be removed in pytest 10.
+  Update imports to use CallSpec instead.
+  See https://docs.pytest.org/en/stable/deprecations.html#callspec2-renamed
+    from _pytest.python import CallSpec2
+
+-- Docs: https://docs.pytest.org/en/stable/how-to/capture-warnings.html
+=================================== XPASSES ===================================
+=========================== short test summary info ===========================
+SKIPPED [1] tests\test_sync_rbac.py:195: Missing RBAC test environment: TEST_ADMIN_A_EMAIL, TEST_ADMIN_A_PASSWORD, TEST_ADMIN_A_ID, TEST_ADMIN_B_EMAIL, TEST_ADMIN_B_PASSWORD, TEST_ADMIN_B_ID
+SKIPPED [1] tests\test_sync_rbac.py:200: Missing RBAC test environment: TEST_ADMIN_A_EMAIL, TEST_ADMIN_A_PASSWORD, TEST_ADMIN_A_ID, TEST_ADMIN_B_EMAIL, TEST_ADMIN_B_PASSWORD, TEST_ADMIN_B_ID
+SKIPPED [1] tests\test_sync_rbac.py:205: Missing RBAC test environment: TEST_ADMIN_A_EMAIL, TEST_ADMIN_A_PASSWORD, TEST_ADMIN_A_ID, TEST_ADMIN_B_EMAIL, TEST_ADMIN_B_PASSWORD, TEST_ADMIN_B_ID
+SKIPPED [1] tests\test_sync_rbac.py:210: Missing RBAC test environment: TEST_ADMIN_A_EMAIL, TEST_ADMIN_A_PASSWORD, TEST_ADMIN_A_ID, TEST_ADMIN_B_EMAIL, TEST_ADMIN_B_PASSWORD, TEST_ADMIN_B_ID
+SKIPPED [1] tests\test_sync_rbac.py:232: Missing RBAC test environment: TEST_ADMIN_A_EMAIL, TEST_ADMIN_A_PASSWORD, TEST_ADMIN_A_ID, TEST_ADMIN_B_EMAIL, TEST_ADMIN_B_PASSWORD, TEST_ADMIN_B_ID
+SKIPPED [1] tests\test_sync_rbac.py:239: Missing RBAC test environment: TEST_ADMIN_A_EMAIL, TEST_ADMIN_A_PASSWORD, TEST_ADMIN_A_ID, TEST_ADMIN_B_EMAIL, TEST_ADMIN_B_PASSWORD, TEST_ADMIN_B_ID
+SKIPPED [8] tests\\test_web_api.py:46: WEB_ENDPOINTS \u0111ang tr\u1ed1ng: xin TV4/TV1 danh s\xe1ch endpoint c\u1ee7a Web
+XFAIL tests/test_security.py::test_login_rejects_stored_hash_as_password - verify_password ch\u1ea5p nh\u1eadn ch\xednh chu\u1ed7i b\u0103m SHA-256 l\xe0m m\u1eadt kh\u1ea9u (pass-the-hash), v\xe0 SHA-256 kh\xf4ng mu\u1ed1i. C\xf3 th\u1ec3 l\xe0 c\u1ed1 \xfd \u0111\u1ec3 t\u01b0\u01a1ng th\xedch Android; Lead x\xe1c nh\u1eadn.
+XPASS tests/test_security.py::test_pull_does_not_expose_reset_token - Admin.to_dict() tr\u1ea3 reset_token cho m\u1ecdi client pull; ai pull \u0111\u01b0\u1ee3c c\xf3 th\u1ec3 \u0111\u1eb7t l\u1ea1i m\u1eadt kh\u1ea9u admin kh\xe1c. C\u1ea7n Lead x\xe1c nh\u1eadn c\xf3 th\u1eadt s\u1ef1 ph\u1ea3i \u0111\u1ed3ng b\u1ed9 reset_token.
+FAILED tests/test_security.py::test_cors_rejects_unknown_origin - AssertionEr...
+FAILED tests/test_security.py::test_sync_serialization_does_not_expose_sensitive_fields
+FAILED tests/test_sync_edge_cases.py::test_unknown_route_returns_json_error
+3 failed, 102 passed, 14 skipped, 1 xfailed, 1 xpassed, 1 warning in 14.06s
