@@ -54,6 +54,50 @@ def error_response(code: str, message: str, status_code: int = 400, details: dic
     return jsonify(body), status_code
 
 
+def _parse_pagination(default_limit: int = 100, max_limit: int = 500):
+    raw_limit = request.args.get("limit")
+    raw_offset = request.args.get("offset")
+
+    limit = default_limit
+    offset = 0
+
+    if raw_limit is not None and raw_limit != "":
+        try:
+            limit = int(raw_limit)
+        except (TypeError, ValueError):
+            return None, None, error_response(
+                "VALIDATION_ERROR",
+                "Tham số 'limit' phải là số nguyên hợp lệ.",
+                422,
+            )
+        if limit <= 0:
+            return None, None, error_response(
+                "VALIDATION_ERROR",
+                "Tham số 'limit' phải là số nguyên dương lớn hơn 0.",
+                422,
+            )
+        if limit > max_limit:
+            limit = max_limit
+
+    if raw_offset is not None and raw_offset != "":
+        try:
+            offset = int(raw_offset)
+        except (TypeError, ValueError):
+            return None, None, error_response(
+                "VALIDATION_ERROR",
+                "Tham số 'offset' phải là số nguyên hợp lệ.",
+                422,
+            )
+        if offset < 0:
+            return None, None, error_response(
+                "VALIDATION_ERROR",
+                "Tham số 'offset' phải là số nguyên lớn hơn hoặc bằng 0.",
+                422,
+            )
+
+    return limit, offset, None
+
+
 def _get_redis_conn():
     redis_url = os.getenv("REDIS_URL", "redis://redis:6379/0")
     return redis.from_url(redis_url)
@@ -500,8 +544,9 @@ def _get_authenticated_admin():
 @api_bp.route("/students", methods=["GET"])
 @require_auth
 def list_students():
-    limit = max(1, min(request.args.get("limit", 100, type=int), 500))
-    offset = max(0, request.args.get("offset", 0, type=int))
+    limit, offset, err = _parse_pagination()
+    if err is not None:
+        return err
     q = request.args.get("q")
     sort = request.args.get("sort")
 
@@ -723,11 +768,12 @@ def record_attendance():
 
 @api_bp.route("/attendance", methods=["GET"])
 def list_attendance():
+    limit, offset, err = _parse_pagination()
+    if err is not None:
+        return err
     subject_id = request.args.get("subject_id")
     checkin_date = request.args.get("date") or request.args.get("checkin_date")
     student_id = request.args.get("student_id")
-    limit = max(1, min(request.args.get("limit", 100, type=int), 500))
-    offset = max(0, request.args.get("offset", 0, type=int))
 
     items, total = CheckinRepository.get_history(
         subject_id=subject_id,
@@ -755,8 +801,9 @@ def list_attendance():
 @api_bp.route("/subjects", methods=["GET"])
 @require_auth
 def list_subjects():
-    limit = max(1, min(request.args.get("limit", 100, type=int), 500))
-    offset = max(0, request.args.get("offset", 0, type=int))
+    limit, offset, err = _parse_pagination()
+    if err is not None:
+        return err
     q = request.args.get("q")
     sort = request.args.get("sort")
     instructor_id = request.args.get("instructor_id")
@@ -810,8 +857,9 @@ def get_subject_detail(subject_id: str):
 @api_bp.route("/admins", methods=["GET"])
 @require_auth
 def list_admins():
-    limit = max(1, min(request.args.get("limit", 100, type=int), 500))
-    offset = max(0, request.args.get("offset", 0, type=int))
+    limit, offset, err = _parse_pagination()
+    if err is not None:
+        return err
     q = request.args.get("q")
     sort = request.args.get("sort")
 

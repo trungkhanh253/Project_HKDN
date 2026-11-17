@@ -179,6 +179,16 @@ def run_tests():
     assert "items" in stu_res and "total" in stu_res and "limit" in stu_res and "offset" in stu_res
     print(f"[12] Chuẩn hóa GET /students (items, total, q, sort)    : OK (total={stu_res['total']})")
 
+    # Kiểm tra chặn limit/offset sai (âm hoặc chữ) trả về 422 (test_pagination_rejects_invalid_size)
+    assert requests.get(f"{API_V1}/students?limit=-5", headers=headers_super, timeout=5).status_code == 422
+    assert requests.get(f"{API_V1}/students?limit=abc", headers=headers_super, timeout=5).status_code == 422
+    assert requests.get(f"{API_V1}/students?offset=-1", headers=headers_super, timeout=5).status_code == 422
+    assert requests.get(f"{API_V1}/subjects?limit=-5", headers=headers_super, timeout=5).status_code == 422
+    assert requests.get(f"{API_V1}/subjects?limit=abc", headers=headers_super, timeout=5).status_code == 422
+    assert requests.get(f"{API_V1}/admins?limit=-5", headers=headers_super, timeout=5).status_code == 422
+    assert requests.get(f"{API_V1}/admins?limit=abc", headers=headers_super, timeout=5).status_code == 422
+    print("[12b] Chặn limit/offset sai (âm/chữ) trả HTTP 422        : OK")
+
     r_web_sub = requests.get(f"{API_V1}/subjects?limit=5&offset=0", headers=headers_super, timeout=5)
     assert r_web_sub.status_code == 200 and "items" in r_web_sub.json()
     r_web_sub_detail = requests.get(f"{API_V1}/subjects/{test_subj_id}", headers=headers_super, timeout=5)
