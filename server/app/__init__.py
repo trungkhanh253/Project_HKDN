@@ -95,16 +95,16 @@ def create_app():
             supports_credentials=False,
         )
 
-    @app.after_request
-    def add_cors_headers(response):
-        req_origin = request.headers.get("Origin")
-        if req_origin and ("*" in cors_origins or req_origin in cors_origins):
-            response.headers["Access-Control-Allow-Origin"] = req_origin
-        else:
-            response.headers["Access-Control-Allow-Origin"] = "*"
-        response.headers["Access-Control-Allow-Headers"] = "Content-Type,Authorization,X-Requested-With"
-        response.headers["Access-Control-Allow-Methods"] = "GET,POST,PUT,DELETE,PATCH,OPTIONS"
-        return response
+    # @app.after_request
+    # def add_cors_headers(response):
+    #     req_origin = request.headers.get("Origin")
+    #     if req_origin and ("*" in cors_origins or req_origin in cors_origins):
+    #         response.headers["Access-Control-Allow-Origin"] = req_origin
+    #     else:
+    #         response.headers["Access-Control-Allow-Origin"] = "*"
+    #     response.headers["Access-Control-Allow-Headers"] = "Content-Type,Authorization,X-Requested-With"
+    #     response.headers["Access-Control-Allow-Methods"] = "GET,POST,PUT,DELETE,PATCH,OPTIONS"
+    #     return response
 
     @app.route("/", defaults={"path": ""}, methods=["OPTIONS"])
     @app.route("/<path:path>", methods=["OPTIONS"])
