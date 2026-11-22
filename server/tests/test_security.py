@@ -305,24 +305,36 @@ def test_sync_pull_response_has_no_sensitive_fields(
         f"Sync Pull returned no records: flat_mode={flat_mode}"
     )
 
-    sensitive_fields = {
-        "password",
-        "reset_token",
-        "expire_at",
-        "checkin_password",
-        "face_embedding",
-    }
-
-    def check_sensitive_fields(obj):
-        if isinstance(obj, dict):
-            for key, value in obj.items():
-                assert key not in sensitive_fields, (
-                    f"Sensitive field leaked: {key}"
+    def check_record(table_name, rec):
+        if not isinstance(rec, dict):
+            return
+        # Bảng students được phép trả face_embedding và checkin_password dạng hash
+        if table_name == "students":
+            forbidden = {"password", "reset_token", "expire_at"}
+            for key in forbidden:
+                assert key not in rec, f"Sensitive field leaked in students: {key}"
+            if "checkin_password" in rec and rec["checkin_password"]:
+                pwd = str(rec["checkin_password"])
+                assert pwd.startswith(("pbkdf2_sha256$", "$checkin$", "pbkdf2:")), (
+                    f"Plaintext checkin_password leaked in students: {pwd}"
                 )
-                check_sensitive_fields(value)
+        else:
+            forbidden = {
+                "password",
+                "reset_token",
+                "expire_at",
+                "checkin_password",
+                "face_embedding",
+            }
+            for key in forbidden:
+                assert key not in rec, f"Sensitive field leaked in {table_name}: {key}"
 
-        elif isinstance(obj, list):
-            for item in obj:
-                check_sensitive_fields(item)
-
-    check_sensitive_fields(changes)
+    if isinstance(changes, dict):
+        for table, records in changes.items():
+            for rec in records:
+                check_record(table, rec)
+    elif isinstance(changes, list):
+        for chg in changes:
+            tbl = chg.get("table_name", "")
+            payload = chg.get("payload", {})
+            check_record(tbl, payload)

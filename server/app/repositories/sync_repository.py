@@ -54,6 +54,21 @@ def _hash_password_if_needed(raw_password: str) -> str:
     return hashlib.sha256(raw_password.encode("utf-8")).hexdigest()
 
 
+def _format_checkin_password_on_push(val: str) -> str:
+    if not val:
+        return None
+    val_str = str(val).strip()
+    if val_str.startswith(("pbkdf2_sha256$", "$checkin$", "pbkdf2:")):
+        return val_str
+    import secrets
+    import base64
+    salt = secrets.token_hex(8)
+    iterations = 260000
+    derived = hashlib.pbkdf2_hmac("sha256", val_str.encode("utf-8"), salt.encode("utf-8"), iterations)
+    hash_b64 = base64.b64encode(derived).decode("ascii").strip()
+    return f"pbkdf2_sha256${iterations}${salt}${hash_b64}"
+
+
 def _validate_embedding(emb):
     if emb is None:
         return None
@@ -667,11 +682,12 @@ class SyncRepository(BaseRepository):
                 "email",
                 "phone",
                 "photo_path",
-                "checkin_password",
                 "face_embedding",
             ):
                 if field in item:
                     setattr(obj, field, item[field])
+            if "checkin_password" in item:
+                obj.checkin_password = _format_checkin_password_on_push(item["checkin_password"])
 
         elif table_name == "enrollments":
             student_id = item.get("student_id") or getattr(obj, "student_id", None)
@@ -710,13 +726,32 @@ class SyncRepository(BaseRepository):
     def _to_safe_dict(row):
         data = row.to_dict()
 
-        for field in (
-            "password",
-            "reset_token",
-            "expire_at",
-            "checkin_password",
-            "face_embedding",
-        ):
-            data.pop(field, None)
+        is_student = (
+            getattr(row, "__tablename__", None) == "students"
+            or row.__class__.__name__ == "Student"
+        )
+
+        if is_student:
+            # Bảng students: giữ face_embedding và checkin_password (chỉ dạng hash)
+            pwd = data.get("checkin_password")
+            if pwd and isinstance(pwd, str) and (
+                pwd.startswith("pbkdf2_sha256$") or pwd.startswith("$checkin$") or pwd.startswith("pbkdf2:")
+            ):
+                pass
+            else:
+                data.pop("checkin_password", None)
+
+            # Các trường nhạy cảm khác vẫn pop
+            for field in ("password", "reset_token", "expire_at"):
+                data.pop(field, None)
+        else:
+            for field in (
+                "password",
+                "reset_token",
+                "expire_at",
+                "checkin_password",
+                "face_embedding",
+            ):
+                data.pop(field, None)
 
         return data
