@@ -1,8 +1,11 @@
 import os
 from pathlib import Path
 import yaml
-from flask import Flask, Response, jsonify
-from flask_cors import CORS
+from flask import Flask, Response, jsonify, request
+try:
+    from flask_cors import CORS
+except ImportError:
+    CORS = None
 from flask_sqlalchemy import SQLAlchemy
 from flask_migrate import Migrate
 from werkzeug.exceptions import HTTPException
@@ -79,17 +82,38 @@ def create_app():
         if origin.strip()
     ]
 
-    CORS(
-        app,
-        resources={
-            r"/*": {
-                "origins": cors_origins,
-            }
-        },
-        methods=["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
-        allow_headers=["Content-Type", "Authorization"],
-        supports_credentials=False,
-    )
+    if CORS is not None:
+        CORS(
+            app,
+            resources={
+                r"/*": {
+                    "origins": cors_origins,
+                }
+            },
+            methods=["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
+            allow_headers=["Content-Type", "Authorization"],
+            supports_credentials=False,
+        )
+
+    @app.before_request
+    def handle_options_preflight():
+        if request.method == "OPTIONS":
+            resp = Response("", status=200)
+            req_origin = request.headers.get("Origin")
+            if req_origin and ("*" in cors_origins or req_origin in cors_origins):
+                resp.headers["Access-Control-Allow-Origin"] = req_origin
+                resp.headers["Access-Control-Allow-Headers"] = "Content-Type,Authorization,X-Requested-With"
+                resp.headers["Access-Control-Allow-Methods"] = "GET,POST,PUT,DELETE,PATCH,OPTIONS"
+            return resp
+
+    @app.after_request
+    def add_cors_headers(response):
+        req_origin = request.headers.get("Origin")
+        if req_origin and ("*" in cors_origins or req_origin in cors_origins):
+            response.headers["Access-Control-Allow-Origin"] = req_origin
+            response.headers["Access-Control-Allow-Headers"] = "Content-Type,Authorization,X-Requested-With"
+            response.headers["Access-Control-Allow-Methods"] = "GET,POST,PUT,DELETE,PATCH,OPTIONS"
+        return response
 
     db.init_app(app)
 

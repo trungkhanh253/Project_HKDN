@@ -1340,7 +1340,7 @@ paths:
           $ref: '#/components/responses/Conflict'
         '422':
           $ref: '#/components/responses/ValidationError'
-  /students/{student_id}:
+  /students/{student_id}/photo:
     parameters:
     - &id014
       name: student_id
@@ -1350,71 +1350,6 @@ paths:
       schema:
         type: string
         example: SV2026001
-    get:
-      tags:
-      - Students
-      summary: Chi tiết một sinh viên
-      x-status: planned
-      security: *id012
-      responses:
-        '200':
-          description: Thành công
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/StudentPublic'
-        '401':
-          $ref: '#/components/responses/Unauthorized'
-        '403':
-          $ref: '#/components/responses/Forbidden'
-        '404':
-          $ref: '#/components/responses/NotFound'
-    put:
-      tags:
-      - Students
-      summary: Sửa thông tin sinh viên
-      description: Chỉ cập nhật các trường được gửi.
-      x-status: planned
-      security: *id012
-      requestBody:
-        required: true
-        content:
-          application/json:
-            schema:
-              $ref: '#/components/schemas/StudentUpdate'
-      responses:
-        '200':
-          description: Đã cập nhật
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/StudentPublic'
-        '401':
-          $ref: '#/components/responses/Unauthorized'
-        '403':
-          $ref: '#/components/responses/Forbidden'
-        '404':
-          $ref: '#/components/responses/NotFound'
-        '422':
-          $ref: '#/components/responses/ValidationError'
-    delete:
-      tags:
-      - Students
-      summary: Xóa sinh viên (xóa mềm)
-      x-status: planned
-      security: *id012
-      responses:
-        '204':
-          description: Thành công, không có nội dung trả về
-        '401':
-          $ref: '#/components/responses/Unauthorized'
-        '403':
-          $ref: '#/components/responses/Forbidden'
-        '404':
-          $ref: '#/components/responses/NotFound'
-  /students/{student_id}/photo:
-    parameters:
-    - *id014
     get:
       tags:
       - Students
