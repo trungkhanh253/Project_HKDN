@@ -234,7 +234,9 @@ def test_cors_rejects_unknown_origin(api, v1):
 
     assert "Access-Control-Allow-Origin" not in r.headers
 
+
 def test_sync_serialization_does_not_expose_sensitive_fields():
+    from app.models import Student
     from app.repositories.sync_repository import SyncRepository
 
     class FakeRow:
@@ -245,25 +247,31 @@ def test_sync_serialization_does_not_expose_sensitive_fields():
                 "password": "secret",
                 "reset_token": "secret",
                 "expire_at": 123456,
-                "checkin_password": "123456",
-                "face_embedding": [0.1, 0.2],
+                "checkin_password": "pbkdf2_sha256$test",
+                "face_embedding": [0.1] * 192,
             }
 
-    result = SyncRepository._to_safe_dict(FakeRow())
+    # Bảng khác students: cấm toàn bộ sensitive fields
+    other_result = SyncRepository._to_safe_dict(FakeRow())
 
-    sensitive_fields = (
-        "password",
-        "reset_token",
-        "expire_at",
-        "checkin_password",
-        "face_embedding",
-    )
+    for field in (
+        "password", "reset_token", "expire_at",
+        "checkin_password", "face_embedding"
+    ):
+        assert field not in other_result
 
-    for field in sensitive_fields:
-        assert field not in result
+    # Bảng students: cho phép vector và hash điểm danh
+    student = Student.__new__(Student)
+    student.to_dict = lambda: FakeRow().to_dict()
 
-    assert result["student_id"] == "SV001"
-    assert result["full_name"] == "Test Student"
+    student_result = SyncRepository._to_safe_dict(student)
+
+    for field in ("password", "reset_token", "expire_at"):
+        assert field not in student_result
+
+    assert student_result["face_embedding"] == [0.1] * 192
+    assert student_result["checkin_password"] == "pbkdf2_sha256$test"
+
 
 @pytest.mark.parametrize("flat_mode", [False, True])
 def test_sync_pull_response_has_no_sensitive_fields(
@@ -305,24 +313,56 @@ def test_sync_pull_response_has_no_sensitive_fields(
         f"Sync Pull returned no records: flat_mode={flat_mode}"
     )
 
-    sensitive_fields = {
+    
+    forbidden_fields = {
         "password",
         "reset_token",
         "expire_at",
-        "checkin_password",
-        "face_embedding",
     }
 
-    def check_sensitive_fields(obj):
-        if isinstance(obj, dict):
-            for key, value in obj.items():
-                assert key not in sensitive_fields, (
-                    f"Sensitive field leaked: {key}"
+    student_only_fields = {
+        "face_embedding",
+        "checkin_password",
+    }
+
+    def check_record(record, table):
+        assert isinstance(record, dict)
+
+        for field in forbidden_fields:
+            assert field not in record, (
+                f"{table}: leaked {field}"
+            )
+
+        if table != "students":
+            for field in student_only_fields:
+                assert field not in record, (
+                    f"{table}: leaked {field}"
                 )
-                check_sensitive_fields(value)
+        else:
+            password_hash = record.get("checkin_password")
+            if password_hash is not None:
+                assert isinstance(password_hash, str)
+                assert password_hash.startswith(
+                    ("pbkdf2_sha256$", "$checkin$")
+                )
 
-        elif isinstance(obj, list):
-            for item in obj:
-                check_sensitive_fields(item)
+            embedding = record.get("face_embedding")
+            if embedding is not None:
+                assert isinstance(embedding, list)
+                assert len(embedding) == 192
 
-    check_sensitive_fields(changes)
+    if isinstance(changes, dict):
+        for table, records in changes.items():
+            for record in records:
+                check_record(record, table)
+    
+    else:
+        for change in changes:
+            table = change.get("table") or change.get("table_name")
+            assert table, f"Missing table name: {change}"
+
+            record = change.get("payload")
+            assert isinstance(record, dict), change
+
+            check_record(record, table)
+

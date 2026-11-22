@@ -3,6 +3,7 @@ from datetime import timedelta
 import sqlalchemy as sa
 from sqlalchemy.exc import IntegrityError, DataError
 from app import db
+import math
 from app.models import (
     Admin,
     Subject,
@@ -54,15 +55,38 @@ def _hash_password_if_needed(raw_password: str) -> str:
     return hashlib.sha256(raw_password.encode("utf-8")).hexdigest()
 
 
+
 def _validate_embedding(emb):
     if emb is None:
         return None
+
     if not isinstance(emb, (list, tuple)) or len(emb) != 192:
-        raise ValueError("Trường face_embedding phải là mảng số thực có đúng 192 chiều.")
+        raise ValueError(
+            "Trường face_embedding phải là mảng số thực có đúng 192 chiều."
+        )
+
     try:
-        return [float(x) for x in emb]
+        values = []
+        for x in emb:
+            if isinstance(x, bool):
+                raise ValueError("Giá trị boolean không hợp lệ.")
+
+            value = float(x)
+
+            if not math.isfinite(value):
+                raise ValueError(
+                    "Trường face_embedding không được chứa NaN hoặc Infinity."
+                )
+
+            values.append(value)
+
+        return values
+
     except (TypeError, ValueError) as exc:
-        raise ValueError("Trường face_embedding chứa giá trị không phải số.") from exc
+        raise ValueError(
+            "Trường face_embedding chứa giá trị không hợp lệ."
+        ) from exc
+
 
 
 class SyncRepository(BaseRepository):
@@ -662,16 +686,37 @@ class SyncRepository(BaseRepository):
             if not student_id:
                 raise ValueError("Bảng 'students' yêu cầu bắt buộc: student_id.")
             obj.student_id = str(student_id)
+            
             for field in (
                 "full_name",
                 "email",
                 "phone",
                 "photo_path",
-                "checkin_password",
-                "face_embedding",
             ):
                 if field in item:
                     setattr(obj, field, item[field])
+
+            if "face_embedding" in item:
+                obj.face_embedding = _validate_embedding(
+                    item["face_embedding"]
+                )
+
+            if "checkin_password" in item:
+                password_hash = item["checkin_password"]
+
+                if password_hash is not None:
+                    if (
+                        not isinstance(password_hash, str)
+                        or not password_hash.startswith(
+                            ("pbkdf2_sha256$", "$checkin$")
+                        )
+                    ):
+                        raise ValueError(
+                            "checkin_password phải là hash hợp lệ."
+                        )
+
+                obj.checkin_password = password_hash
+
 
         elif table_name == "enrollments":
             student_id = item.get("student_id") or getattr(obj, "student_id", None)
@@ -706,6 +751,7 @@ class SyncRepository(BaseRepository):
                     setattr(obj, field, item[field])
 
 
+    
     @staticmethod
     def _to_safe_dict(row):
         data = row.to_dict()
@@ -717,6 +763,13 @@ class SyncRepository(BaseRepository):
             "checkin_password",
             "face_embedding",
         ):
+            if isinstance(row, Student) and field in (
+                "checkin_password",
+                "face_embedding",
+            ):
+                continue
+
             data.pop(field, None)
 
         return data
+
