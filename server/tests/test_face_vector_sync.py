@@ -12,33 +12,25 @@ GV_PASSWORD = "lecturer123"
 
 
 @pytest.fixture
-def api_auth(api, v1):
-    """Session authenticated as SUPER_ADMIN."""
-    r = api.post(f"{v1}/auth/login", json={"email": SUPER_EMAIL, "password": SUPER_PASSWORD}, timeout=5)
+def api_auth(base_url, v1):
+    """Independent Session authenticated as SUPER_ADMIN."""
+    s = requests.Session()
+    r = s.post(f"{v1}/auth/login", json={"email": SUPER_EMAIL, "password": SUPER_PASSWORD}, timeout=5)
     assert r.status_code == 200, f"Đăng nhập Super Admin thất bại: {r.text}"
     token = r.json()["access_token"]
-    old_headers = dict(api.headers)
-    api.headers.update({"Authorization": f"Bearer {token}"})
-    try:
-        yield api
-    finally:
-        api.headers.clear()
-        api.headers.update(old_headers)
+    s.headers.update({"Authorization": f"Bearer {token}"})
+    return s
 
 
 @pytest.fixture
-def lecturer_auth(api, v1):
-    """Session authenticated as Giảng viên (ADM_001)."""
-    r = api.post(f"{v1}/auth/login", json={"email": GV_EMAIL, "password": GV_PASSWORD}, timeout=5)
+def lecturer_auth(base_url, v1):
+    """Independent Session authenticated as Giảng viên (ADM_001)."""
+    s = requests.Session()
+    r = s.post(f"{v1}/auth/login", json={"email": GV_EMAIL, "password": GV_PASSWORD}, timeout=5)
     assert r.status_code == 200, f"Đăng nhập Giảng viên thất bại: {r.text}"
     token = r.json()["access_token"]
-    old_headers = dict(api.headers)
-    api.headers.update({"Authorization": f"Bearer {token}"})
-    try:
-        yield api
-    finally:
-        api.headers.clear()
-        api.headers.update(old_headers)
+    s.headers.update({"Authorization": f"Bearer {token}"})
+    return s
 
 
 def _get_students_from_pull(pull_data):
@@ -116,6 +108,8 @@ def test_face_vector_re_registration_overwrites_old_vector(api_auth, v1):
     v1_old = [0.1] * 192
     v2_new = [0.9] * 192
 
+    base_seq = api_auth.get(f"{v1}/sync/status").json().get("latest_seq", 0)
+
     # Lần 1: Đăng ký vector cũ lúc 10:00
     r1 = api_auth.post(
         f"{v1}/sync/push",
@@ -151,7 +145,7 @@ def test_face_vector_re_registration_overwrites_old_vector(api_auth, v1):
     assert r2.status_code == 200
 
     # Kéo về kiểm tra: vector trên Server phải là v2_new (ghi đè thành công)
-    r_pull = api_auth.get(f"{v1}/sync/pull?since_seq=0&limit=500")
+    r_pull = api_auth.get(f"{v1}/sync/pull?since_seq={base_seq}&limit=500")
     assert r_pull.status_code == 200
     students = _get_students_from_pull(r_pull.json())
     matched = [s for s in students if s.get("student_id") == student_id]
@@ -170,6 +164,8 @@ def test_face_vector_older_timestamp_is_ignored(api_auth, v1):
 
     v_current = [0.8] * 192
     v_stale = [0.2] * 192
+
+    base_seq = api_auth.get(f"{v1}/sync/status").json().get("latest_seq", 0)
 
     # Đăng ký bản hiện tại lúc 12:00
     r1 = api_auth.post(
@@ -207,7 +203,7 @@ def test_face_vector_older_timestamp_is_ignored(api_auth, v1):
     assert r2.json().get("skipped", {}).get("students", 0) >= 1, "Bản cũ hơn phải bị bỏ qua (skipped)"
 
     # Kéo về kiểm tra: vector trên Server vẫn giữ nguyên v_current (0.8)
-    r_pull = api_auth.get(f"{v1}/sync/pull?since_seq=0&limit=500")
+    r_pull = api_auth.get(f"{v1}/sync/pull?since_seq={base_seq}&limit=500")
     students = _get_students_from_pull(r_pull.json())
     matched = [s for s in students if s.get("student_id") == student_id]
     assert len(matched) >= 1
@@ -314,6 +310,8 @@ def test_checkin_password_hash_handling(api_auth, v1):
     sid_raw = f"SV_RAW_{uuid.uuid4().hex[:6].upper()}"
     sid_hash = f"SV_HASH_{uuid.uuid4().hex[:6].upper()}"
 
+    base_seq = api_auth.get(f"{v1}/sync/status").json().get("latest_seq", 0)
+
     r_push = api_auth.post(f"{v1}/sync/push", json={
         "students": [
             {
@@ -334,15 +332,15 @@ def test_checkin_password_hash_handling(api_auth, v1):
     })
     assert r_push.status_code == 200
 
-    r_pull = api_auth.get(f"{v1}/sync/pull?since_seq=0&limit=500")
+    r_pull = api_auth.get(f"{v1}/sync/pull?since_seq={base_seq}&limit=500")
     assert r_pull.status_code == 200
     students = _get_students_from_pull(r_pull.json())
 
     stu_raw = next((s for s in students if s.get("student_id") == sid_raw), None)
     stu_hash = next((s for s in students if s.get("student_id") == sid_hash), None)
 
-    assert stu_raw is not None
-    assert stu_hash is not None
+    assert stu_raw is not None, f"Không tìm thấy sinh viên mật khẩu thô {sid_raw}"
+    assert stu_hash is not None, f"Không tìm thấy sinh viên mật khẩu hash {sid_hash}"
 
     # Mật khẩu thô không bao giờ được trả về dưới dạng thô
     assert stu_raw.get("checkin_password") != raw_pwd
