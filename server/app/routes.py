@@ -6,12 +6,13 @@ from rq.exceptions import NoSuchJobError
 from sqlalchemy.exc import IntegrityError, DataError
 from flask import Blueprint, jsonify, request, g
 from app.models import Admin, Subject, Student
-from app.permissions import filter_accessible
+from app.permissions import can_access_subject, filter_accessible
 from app.services.password_reset_service import create_password_reset_token
 from app.services.email_service import send_password_reset_email
 from app.services.password_reset_service import reset_password
 from flask import current_app
 from redis.exceptions import RedisError
+from app.permissions import filter_accessible, can_access_subject
 from app.services.token_revocation_service import (
     revoke_token,
     is_token_revoked,
@@ -722,12 +723,28 @@ def record_attendance():
 
 
 @api_bp.route("/attendance", methods=["GET"])
+@require_auth
 def list_attendance():
     subject_id = request.args.get("subject_id")
     checkin_date = request.args.get("date") or request.args.get("checkin_date")
     student_id = request.args.get("student_id")
-    limit = max(1, min(request.args.get("limit", 100, type=int), 500))
-    offset = max(0, request.args.get("offset", 0, type=int))
+
+    limit = max(
+        1,
+        min(request.args.get("limit", 100, type=int), 500)
+    )
+    offset = max(
+        0,
+        request.args.get("offset", 0, type=int)
+    )
+
+    # ADMIN không được truy cập môn học của người khác
+    if subject_id and not can_access_subject(subject_id):
+        return error_response(
+            "FORBIDDEN",
+            "Bạn không có quyền truy cập dữ liệu điểm danh của môn học này.",
+            403,
+        )
 
     items, total = CheckinRepository.get_history(
         subject_id=subject_id,
@@ -738,6 +755,7 @@ def list_attendance():
     )
 
     items_data = [c.to_dict() for c in items]
+
     return jsonify({
         "items": items_data,
         "total": total,
