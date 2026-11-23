@@ -97,6 +97,27 @@ def create_app():
             supports_credentials=False,
         )
         
+
+    @app.before_request
+    def handle_options_preflight():
+        if request.method == "OPTIONS":
+            resp = Response("", status=200)
+            req_origin = request.headers.get("Origin")
+            if req_origin and ("*" in cors_origins or req_origin in cors_origins):
+                resp.headers["Access-Control-Allow-Origin"] = req_origin
+                resp.headers["Access-Control-Allow-Headers"] = "Content-Type,Authorization,X-Requested-With"
+                resp.headers["Access-Control-Allow-Methods"] = "GET,POST,PUT,DELETE,PATCH,OPTIONS"
+            return resp
+
+    @app.after_request
+    def add_cors_headers(response):
+        req_origin = request.headers.get("Origin")
+        if req_origin and ("*" in cors_origins or req_origin in cors_origins):
+            response.headers["Access-Control-Allow-Origin"] = req_origin
+            response.headers["Access-Control-Allow-Headers"] = "Content-Type,Authorization,X-Requested-With"
+            response.headers["Access-Control-Allow-Methods"] = "GET,POST,PUT,DELETE,PATCH,OPTIONS"
+        return response
+
     db.init_app(app)
 
     migrate.init_app(app, db)  
