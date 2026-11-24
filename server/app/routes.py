@@ -19,7 +19,7 @@ from app.services.token_revocation_service import (
 )
 
 from app import db
-from app.models import Admin, Subject, Student, Enrollment, CheckinHistory
+from app.models import Admin, Subject, Student, Enrollment, CheckinHistory, EmailRecipient
 from app.auth import (
     ACCESS_TOKEN_EXPIRES,
     create_jwt_token,
@@ -33,8 +33,9 @@ from app.repositories.subject_repository import SubjectRepository
 from app.repositories.sync_repository import SyncRepository
 from app.repositories.checkin_repository import CheckinRepository
 from app.repositories.admin_repository import AdminRepository
-from app.tasks import process_csv_import
+from app.tasks import process_csv_import, send_attendance_report_task
 from app.permissions import PermissionDenied
+from datetime import date, datetime
 import re
 import uuid
 
@@ -1365,3 +1366,373 @@ def auth_reset_password():
     return jsonify({
         "message": "Đặt lại mật khẩu thành công. Vui lòng đăng nhập lại."
     }), 200
+
+
+# ==========================================
+# EMAIL REPORTS: NGƯỜI NHẬN BÁO CÁO & GỬI BÁO CÁO EMAIL
+# ==========================================
+
+def _check_subject_access_for_email(subject_id: str):
+    """Kiểm tra môn học tồn tại và quyền truy cập của giảng viên / SUPER_ADMIN."""
+    admin, err = _get_authenticated_admin()
+    if err:
+        return None, None, err
+
+    subject = SubjectRepository.get_by_id(subject_id)
+    if not subject:
+        return None, None, error_response(
+            "SUBJECT_NOT_FOUND",
+            f"Không tìm thấy môn học với mã '{subject_id}'.",
+            404,
+        )
+
+    if admin.role != "SUPER_ADMIN" and subject.instructor_id != admin.admin_id:
+        return None, None, error_response(
+            "FORBIDDEN",
+            "Bạn không có quyền thao tác danh sách email nhận báo cáo của môn học này.",
+            403,
+        )
+
+    return admin, subject, None
+
+
+@api_bp.route("/subjects/<string:subject_id>/email-recipients", methods=["GET"])
+@require_auth
+def list_subject_email_recipients(subject_id: str):
+    _, _, err = _check_subject_access_for_email(subject_id)
+    if err:
+        return err
+
+    raw_limit = request.args.get("limit", 50)
+    raw_offset = request.args.get("offset", 0)
+    try:
+        limit = int(raw_limit)
+        offset = int(raw_offset)
+    except (TypeError, ValueError):
+        return error_response(
+            "VALIDATION_ERROR",
+            "Tham số 'limit' và 'offset' phải là số nguyên.",
+            422,
+        )
+
+    if limit < 1 or limit > 500 or offset < 0:
+        return error_response(
+            "VALIDATION_ERROR",
+            "Tham số 'limit' phải trong khoảng 1..500 và 'offset' phải >= 0.",
+            422,
+        )
+
+    query = (
+        EmailRecipient.query.filter(
+            EmailRecipient.subject_id == subject_id,
+            EmailRecipient.deleted_at.is_(None),
+        )
+        .order_by(EmailRecipient.email_id.asc())
+    )
+
+    total = query.count()
+    records = query.limit(limit).offset(offset).all()
+    items = [r.to_dict() for r in records]
+
+    return jsonify({
+        "items": items,
+        "total": total,
+        "limit": limit,
+        "offset": offset,
+    }), 200
+
+
+@api_bp.route("/subjects/<string:subject_id>/email-recipients", methods=["POST"])
+@require_auth
+def create_subject_email_recipient(subject_id: str):
+    _, _, err = _check_subject_access_for_email(subject_id)
+    if err:
+        return err
+
+    data = request.get_json(silent=True)
+    if not isinstance(data, dict):
+        return error_response(
+            "INVALID_JSON",
+            "Body request phải là JSON object.",
+            400,
+        )
+
+    raw_email = data.get("email_address")
+    if not isinstance(raw_email, str) or not raw_email.strip():
+        return error_response(
+            "VALIDATION_ERROR",
+            "Trường 'email_address' là bắt buộc.",
+            422,
+        )
+
+    email_address = raw_email.strip().lower()
+    if not re.fullmatch(r"[^@\s]+@[^@\s]+\.[^@\s]+", email_address):
+        return error_response(
+            "VALIDATION_ERROR",
+            "Địa chỉ email không hợp lệ.",
+            422,
+        )
+
+    recipient_name = data.get("recipient_name")
+    if recipient_name is not None and not isinstance(recipient_name, str):
+        return error_response(
+            "VALIDATION_ERROR",
+            "Trường 'recipient_name' phải là chuỗi ký tự hoặc null.",
+            422,
+        )
+    if isinstance(recipient_name, str):
+        recipient_name = recipient_name.strip() or None
+
+    is_selected = data.get("is_selected", True)
+    if not isinstance(is_selected, bool):
+        return error_response(
+            "VALIDATION_ERROR",
+            "Trường 'is_selected' phải là kiểu boolean.",
+            422,
+        )
+
+    now = datetime.utcnow()
+    added_date = data.get("added_date")
+    if not isinstance(added_date, str) or not added_date.strip():
+        added_date = now.strftime("%Y-%m-%d")
+    else:
+        added_date = added_date.strip()
+
+    existing = EmailRecipient.query.filter_by(
+        subject_id=subject_id,
+        email_address=email_address,
+    ).first()
+
+    if existing is not None:
+        if existing.deleted_at is None:
+            return error_response(
+                "EMAIL_RECIPIENT_CONFLICT",
+                f"Email '{email_address}' đã tồn tại trong danh sách nhận báo cáo của môn '{subject_id}'.",
+                409,
+            )
+        existing.deleted_at = None
+        existing.recipient_name = recipient_name
+        existing.is_selected = is_selected
+        existing.added_date = added_date
+        existing.updated_at = now
+        db.session.commit()
+        return jsonify(existing.to_dict()), 201
+
+    record = EmailRecipient(
+        subject_id=subject_id,
+        email_address=email_address,
+        recipient_name=recipient_name,
+        added_date=added_date,
+        is_selected=is_selected,
+        uuid=str(uuid.uuid4()),
+        updated_at=now,
+    )
+    db.session.add(record)
+    db.session.commit()
+    return jsonify(record.to_dict()), 201
+
+
+@api_bp.route(
+    "/subjects/<string:subject_id>/email-recipients/<int:email_id>",
+    methods=["PUT"],
+)
+@require_auth
+def update_subject_email_recipient(subject_id: str, email_id: int):
+    _, _, err = _check_subject_access_for_email(subject_id)
+    if err:
+        return err
+
+    record = EmailRecipient.query.filter_by(
+        email_id=email_id,
+        subject_id=subject_id,
+        deleted_at=None,
+    ).first()
+    if not record:
+        return error_response(
+            "EMAIL_RECIPIENT_NOT_FOUND",
+            f"Không tìm thấy người nhận báo cáo với id '{email_id}' trong môn '{subject_id}'.",
+            404,
+        )
+
+    data = request.get_json(silent=True)
+    if not isinstance(data, dict):
+        return error_response(
+            "INVALID_JSON",
+            "Body request phải là JSON object.",
+            400,
+        )
+
+    raw_email = data.get("email_address")
+    if not isinstance(raw_email, str) or not raw_email.strip():
+        return error_response(
+            "VALIDATION_ERROR",
+            "Trường 'email_address' là bắt buộc.",
+            422,
+        )
+
+    email_address = raw_email.strip().lower()
+    if not re.fullmatch(r"[^@\s]+@[^@\s]+\.[^@\s]+", email_address):
+        return error_response(
+            "VALIDATION_ERROR",
+            "Địa chỉ email không hợp lệ.",
+            422,
+        )
+
+    if email_address != record.email_address:
+        conflict = EmailRecipient.query.filter(
+            EmailRecipient.subject_id == subject_id,
+            EmailRecipient.email_address == email_address,
+            EmailRecipient.email_id != email_id,
+        ).first()
+        if conflict is not None:
+            if conflict.deleted_at is None:
+                return error_response(
+                    "EMAIL_RECIPIENT_CONFLICT",
+                    f"Email '{email_address}' đã tồn tại trong danh sách nhận báo cáo của môn '{subject_id}'.",
+                    409,
+                )
+            db.session.delete(conflict)
+            db.session.flush()
+
+    if "recipient_name" in data:
+        recipient_name = data.get("recipient_name")
+        if recipient_name is not None and not isinstance(recipient_name, str):
+            return error_response(
+                "VALIDATION_ERROR",
+                "Trường 'recipient_name' phải là chuỗi ký tự hoặc null.",
+                422,
+            )
+        record.recipient_name = recipient_name.strip() or None if isinstance(recipient_name, str) else None
+
+    if "is_selected" in data:
+        is_selected = data.get("is_selected")
+        if not isinstance(is_selected, bool):
+            return error_response(
+                "VALIDATION_ERROR",
+                "Trường 'is_selected' phải là kiểu boolean.",
+                422,
+            )
+        record.is_selected = is_selected
+
+    record.email_address = email_address
+    record.updated_at = datetime.utcnow()
+    db.session.commit()
+    return jsonify(record.to_dict()), 200
+
+
+@api_bp.route(
+    "/subjects/<string:subject_id>/email-recipients/<int:email_id>",
+    methods=["DELETE"],
+)
+@require_auth
+def delete_subject_email_recipient(subject_id: str, email_id: int):
+    _, _, err = _check_subject_access_for_email(subject_id)
+    if err:
+        return err
+
+    record = EmailRecipient.query.filter_by(
+        email_id=email_id,
+        subject_id=subject_id,
+        deleted_at=None,
+    ).first()
+    if not record:
+        return error_response(
+            "EMAIL_RECIPIENT_NOT_FOUND",
+            f"Không tìm thấy người nhận báo cáo với id '{email_id}' trong môn '{subject_id}'.",
+            404,
+        )
+
+    now = datetime.utcnow()
+    record.deleted_at = now
+    record.updated_at = now
+    db.session.commit()
+    return "", 204
+
+
+@api_bp.route("/subjects/<string:subject_id>/send-report", methods=["POST"])
+@require_auth
+def send_subject_attendance_report(subject_id: str):
+    _, _, err = _check_subject_access_for_email(subject_id)
+    if err:
+        return err
+
+    if request.data and request.data.strip():
+        data = request.get_json(silent=True)
+        if not isinstance(data, dict):
+            return error_response(
+                "INVALID_JSON",
+                "Body request phải là JSON object.",
+                400,
+            )
+    else:
+        data = {}
+
+    date_from = data.get("date_from")
+    date_to = data.get("date_to")
+
+    parsed_from = None
+    parsed_to = None
+
+    if date_from is not None:
+        if not isinstance(date_from, str) or not date_from.strip():
+            return error_response(
+                "VALIDATION_ERROR",
+                "Trường 'date_from' phải có định dạng YYYY-MM-DD.",
+                422,
+            )
+        try:
+            parsed_from = date.fromisoformat(date_from.strip())
+            date_from = parsed_from.isoformat()
+        except ValueError:
+            return error_response(
+                "VALIDATION_ERROR",
+                "Trường 'date_from' phải có định dạng YYYY-MM-DD.",
+                422,
+            )
+
+    if date_to is not None:
+        if not isinstance(date_to, str) or not date_to.strip():
+            return error_response(
+                "VALIDATION_ERROR",
+                "Trường 'date_to' phải có định dạng YYYY-MM-DD.",
+                422,
+            )
+        try:
+            parsed_to = date.fromisoformat(date_to.strip())
+            date_to = parsed_to.isoformat()
+        except ValueError:
+            return error_response(
+                "VALIDATION_ERROR",
+                "Trường 'date_to' phải có định dạng YYYY-MM-DD.",
+                422,
+            )
+
+    if parsed_from and parsed_to and parsed_from > parsed_to:
+        return error_response(
+            "VALIDATION_ERROR",
+            "Trường 'date_from' không được lớn hơn 'date_to'.",
+            422,
+        )
+
+    conn = _get_redis_conn()
+    queue = Queue("default", connection=conn)
+    job = queue.enqueue(
+        send_attendance_report_task,
+        subject_id,
+        date_from,
+        date_to,
+        job_timeout=300,
+        result_ttl=86400,
+    )
+
+    return (
+        jsonify(
+            {
+                "job_id": job.id,
+                "status": "queued",
+                "message": "Đã nhận yêu cầu gửi báo cáo điểm danh qua email.",
+            }
+        ),
+        202,
+    )
+
