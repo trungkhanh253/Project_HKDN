@@ -1,8 +1,11 @@
 import csv
 import io
+import os
+import smtplib
+from email.message import EmailMessage
 import pandas as pd
 from app import create_app, db
-from app.models import Admin, Subject, Student, Enrollment
+from app.models import Admin, Subject, Student, Enrollment, CheckinHistory, EmailRecipient
 from app.repositories.base_repository import BaseRepository
 from app.auth import hash_password_sha256
 
@@ -254,4 +257,97 @@ def process_csv_import(csv_content: str, import_type: str = None, default_subjec
             "updated": updated,
             "skipped": skipped,
             "errors": errors,
+        }
+
+
+def send_attendance_report_task(
+    subject_id: str,
+    date_from: str = None,
+    date_to: str = None,
+) -> dict:
+    """
+    Tác vụ nền (RQ) tổng hợp và gửi báo cáo điểm danh của môn học `subject_id`
+    tới danh sách người nhận trong bảng `email_recipients` có `is_selected = True`.
+    """
+    app = create_app()
+    with app.app_context():
+        subject = Subject.query.filter_by(subject_id=subject_id, deleted_at=None).first()
+        if not subject:
+            raise ValueError(f"Không tìm thấy môn học '{subject_id}'.")
+
+        recipients = (
+            EmailRecipient.query.filter_by(
+                subject_id=subject_id,
+                is_selected=True,
+                deleted_at=None,
+            )
+            .order_by(EmailRecipient.email_id.asc())
+            .all()
+        )
+        recipient_emails = [r.email_address for r in recipients if r.email_address]
+
+        checkin_query = CheckinHistory.query.filter_by(
+            subject_id=subject_id,
+            deleted_at=None,
+        )
+        if date_from:
+            checkin_query = checkin_query.filter(CheckinHistory.checkin_date >= date_from)
+        if date_to:
+            checkin_query = checkin_query.filter(CheckinHistory.checkin_date <= date_to)
+
+        checkins = checkin_query.all()
+        total_enrollments = Enrollment.query.filter_by(
+            subject_id=subject_id,
+            deleted_at=None,
+        ).count()
+
+        sent_count = 0
+        smtp_status = "skipped_no_recipients"
+
+        if recipient_emails:
+            host = os.getenv("SMTP_HOST", "smtp-relay.brevo.com")
+            port = int(os.getenv("SMTP_PORT", "587"))
+            username = os.getenv("SMTP_USERNAME")
+            password = os.getenv("SMTP_PASSWORD")
+            sender = os.getenv("MAIL_FROM")
+
+            if all([username, password, sender]):
+                period_str = (
+                    f" từ {date_from or 'đầu kỳ'} đến {date_to or 'hiện tại'}"
+                    if (date_from or date_to)
+                    else ""
+                )
+                msg = EmailMessage()
+                msg["Subject"] = f"[Báo cáo điểm danh] {subject.subject_name} ({subject.subject_id})"
+                msg["From"] = sender
+                msg["To"] = ", ".join(recipient_emails)
+                msg.set_content(
+                    f"Báo cáo điểm danh môn: {subject.subject_name} ({subject.subject_id}){period_str}\n"
+                    f"- Tổng số sinh viên ghi danh: {total_enrollments}\n"
+                    f"- Tổng số lượt điểm danh ghi nhận: {len(checkins)}\n"
+                )
+                try:
+                    with smtplib.SMTP(host, port, timeout=15) as smtp:
+                        smtp.starttls()
+                        smtp.login(username, password)
+                        smtp.send_message(msg)
+                    sent_count = len(recipient_emails)
+                    smtp_status = "sent"
+                except Exception as exc:
+                    smtp_status = f"smtp_error: {str(exc)}"
+            else:
+                smtp_status = "simulated_no_smtp_config"
+                sent_count = len(recipient_emails)
+
+        return {
+            "subject_id": subject_id,
+            "subject_name": subject.subject_name,
+            "date_from": date_from,
+            "date_to": date_to,
+            "recipients": recipient_emails,
+            "recipient_count": len(recipient_emails),
+            "sent_count": sent_count,
+            "total_enrollments": total_enrollments,
+            "total_checkins": len(checkins),
+            "smtp_status": smtp_status,
         }
