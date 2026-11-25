@@ -1562,37 +1562,39 @@ def update_subject_email_recipient(subject_id: str, email_id: int):
             400,
         )
 
-    raw_email = data.get("email_address")
-    if not isinstance(raw_email, str) or not raw_email.strip():
-        return error_response(
-            "VALIDATION_ERROR",
-            "Trường 'email_address' là bắt buộc.",
-            422,
-        )
+    email_address = record.email_address
+    if "email_address" in data:
+        raw_email = data.get("email_address")
+        if not isinstance(raw_email, str) or not raw_email.strip():
+            return error_response(
+                "VALIDATION_ERROR",
+                "Trường 'email_address' không được để trống.",
+                422,
+            )
 
-    email_address = raw_email.strip().lower()
-    if not re.fullmatch(r"[^@\s]+@[^@\s]+\.[^@\s]+", email_address):
-        return error_response(
-            "VALIDATION_ERROR",
-            "Địa chỉ email không hợp lệ.",
-            422,
-        )
+        email_address = raw_email.strip().lower()
+        if not re.fullmatch(r"[^@\s]+@[^@\s]+\.[^@\s]+", email_address):
+            return error_response(
+                "VALIDATION_ERROR",
+                "Địa chỉ email không hợp lệ.",
+                422,
+            )
 
-    if email_address != record.email_address:
-        conflict = EmailRecipient.query.filter(
-            EmailRecipient.subject_id == subject_id,
-            EmailRecipient.email_address == email_address,
-            EmailRecipient.email_id != email_id,
-        ).first()
-        if conflict is not None:
-            if conflict.deleted_at is None:
-                return error_response(
-                    "EMAIL_RECIPIENT_CONFLICT",
-                    f"Email '{email_address}' đã tồn tại trong danh sách nhận báo cáo của môn '{subject_id}'.",
-                    409,
-                )
-            db.session.delete(conflict)
-            db.session.flush()
+        if email_address != record.email_address:
+            conflict = EmailRecipient.query.filter(
+                EmailRecipient.subject_id == subject_id,
+                EmailRecipient.email_address == email_address,
+                EmailRecipient.email_id != email_id,
+            ).first()
+            if conflict is not None:
+                if conflict.deleted_at is None:
+                    return error_response(
+                        "EMAIL_RECIPIENT_CONFLICT",
+                        f"Email '{email_address}' đã tồn tại trong danh sách nhận báo cáo của môn '{subject_id}'.",
+                        409,
+                    )
+                db.session.delete(conflict)
+                db.session.flush()
 
     if "recipient_name" in data:
         recipient_name = data.get("recipient_name")
@@ -1655,7 +1657,17 @@ def send_subject_attendance_report(subject_id: str):
     _, _, err = _check_subject_access_for_email(subject_id)
     if err:
         return err
-
+    selected_count = EmailRecipient.query.filter_by(
+        subject_id=subject_id,
+        is_selected=True,
+        deleted_at=None,
+    ).count()
+    if selected_count == 0:
+        return error_response(
+            "NO_RECIPIENTS",
+            "Môn học chưa có người nhận báo cáo nào được chọn.",
+            409,
+        )
     if request.data and request.data.strip():
         data = request.get_json(silent=True)
         if not isinstance(data, dict):
