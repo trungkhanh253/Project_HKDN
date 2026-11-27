@@ -38,6 +38,12 @@ import re
 import uuid
 
 from app.auth import hash_password_sha256
+from datetime import datetime, timezone
+from app.services.face_matching_service import (
+    FaceMatchingService,
+    FaceServiceUnavailableError,
+    FaceNotDetectedError,
+)
 
 api_bp = Blueprint("api_v1", __name__)
 
@@ -707,15 +713,25 @@ def delete_student(student_id: str):
 # GĐ 3: API ĐIỂM DANH (POST & GET /attendance)
 # ==========================================
 
-@api_bp.route("/attendance", methods=["POST"])
-def record_attendance():
+def _handle_attendance_record(is_face_mode: bool = False):
     admin, err = _get_authenticated_admin()
     if err:
         return err
 
-    data = request.get_json(silent=True)
+    # 1. Hỗ trợ cả application/json và multipart/form-data
+    image_file = None
+    if request.is_json:
+        data = request.get_json(silent=True) or {}
+    else:
+        # Form-data (chứa text fields và file ảnh)
+        data = request.form.to_dict()
+        image_file = request.files.get("image") or request.files.get("photo") or request.files.get("file")
+
     if not isinstance(data, dict):
-        return error_response("INVALID_JSON", "Body request phải là JSON object.", 400)
+        return error_response("INVALID_REQUEST", "Dữ liệu yêu cầu không hợp lệ.", 400)
+
+    # Nếu gọi qua route /attendance/face hoặc có đính kèm ảnh thì kích hoạt chế độ xác thực khuôn mặt
+    is_face_checkin = is_face_mode or (image_file is not None)
 
     student_id = (data.get("student_id") or "").strip()
     subject_id = (data.get("subject_id") or "").strip()
@@ -723,10 +739,28 @@ def record_attendance():
     checkin_date = (data.get("checkin_date") or "").strip()
     uuid_str = (data.get("uuid") or "").strip() or None
 
+    # Tự động điền ngày giờ nếu client điểm danh bằng ảnh không truyền
+    now_utc = datetime.now(timezone.utc)
+    if is_face_checkin:
+        if not checkin_time:
+            checkin_time = now_utc.strftime("%H:%M:%S")
+        if not checkin_date:
+            checkin_date = now_utc.strftime("%Y-%m-%d")
+        if not uuid_str:
+            uuid_str = str(uuid.uuid4())
+
     if not student_id or not subject_id or not checkin_time or not checkin_date:
         return error_response(
             "VALIDATION_ERROR",
             "Các trường student_id, subject_id, checkin_time và checkin_date là bắt buộc.",
+            422,
+        )
+
+    # Nếu là chế độ điểm danh bằng ảnh, bắt buộc phải có file ảnh
+    if is_face_checkin and not image_file:
+        return error_response(
+            "MISSING_IMAGE",
+            "Vui lòng đính kèm tệp ảnh khuôn mặt để điểm danh (trường 'image' hoặc 'photo').",
             422,
         )
 
@@ -749,6 +783,29 @@ def record_attendance():
             422,
         )
 
+    # Nếu có điểm danh bằng ảnh, thực hiện xác thực khuôn mặt (Task 13, 14)
+    score = None
+    if is_face_checkin:
+        try:
+            is_matched, score, message = FaceMatchingService.verify_face(student, image_file)
+            if not is_matched:
+                # Không lưu điểm danh nếu xác thực thất bại
+                return error_response(
+                    "FACE_VERIFICATION_FAILED",
+                    message,
+                    422,
+                    details={"score": score, "threshold": 0.6},
+                )
+        except FaceServiceUnavailableError as exc:
+            # Lỗi service bên ngoài -> không lưu điểm danh
+            return error_response("FACE_SERVICE_ERROR", str(exc), 503)
+        except FaceNotDetectedError as exc:
+            # Ảnh không có khuôn mặt -> không lưu điểm danh
+            return error_response("FACE_NOT_DETECTED", str(exc), 422)
+        except Exception as exc:
+            return error_response("VERIFICATION_ERROR", f"Lỗi trong quá trình xác thực khuôn mặt: {str(exc)}", 500)
+
+    # Chỉ ghi điểm danh khi tất cả kiểm tra và xác thực đều hợp lệ
     checkin, is_created = CheckinRepository.record_checkin(
         student_id=student_id,
         subject_id=subject_id,
@@ -758,12 +815,30 @@ def record_attendance():
     )
 
     status_code = 201 if is_created else 200
-    return jsonify({
+    res_data = {
         "status": "created" if is_created else "already_exists",
         "created": is_created,
-        "message": "Ghi nhận điểm danh thành công." if is_created else "Bản ghi điểm danh với uuid này đã tồn tại.",
+        "message": (
+            "Ghi nhận điểm danh bằng khuôn mặt thành công."
+            if is_face_checkin
+            else ("Ghi nhận điểm danh thành công." if is_created else "Bản ghi điểm danh với uuid này đã tồn tại.")
+        ),
         "checkin": checkin.to_dict(),
-    }), status_code
+    }
+    if score is not None:
+        res_data["score"] = round(score, 4)
+
+    return jsonify(res_data), status_code
+
+
+@api_bp.route("/attendance", methods=["POST"])
+def record_attendance():
+    return _handle_attendance_record(is_face_mode=False)
+
+
+@api_bp.route("/attendance/face", methods=["POST"])
+def record_attendance_face():
+    return _handle_attendance_record(is_face_mode=True)
 
 
 @api_bp.route("/attendance", methods=["GET"])

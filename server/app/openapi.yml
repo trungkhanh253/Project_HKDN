@@ -2324,6 +2324,54 @@ paths:
         '422':
           description: Sinh viên chưa ghi danh vào môn học này
 
+  /attendance/face:
+    post:
+      tags: [Attendance]
+      summary: Điểm danh sinh viên bằng hình ảnh khuôn mặt (Face Recognition)
+      description: Nhận tệp ảnh khuôn mặt, so khớp với vector khuôn mặt đã đăng ký của sinh viên. Nếu khớp thì ghi nhận điểm danh, không khớp hoặc lỗi thì từ chối và tuyệt đối không lưu dữ liệu.
+      security:
+        - BearerAuth: []
+      requestBody:
+        required: true
+        content:
+          multipart/form-data:
+            schema:
+              type: object
+              required:
+                - student_id
+                - subject_id
+                - image
+              properties:
+                student_id:
+                  type: string
+                subject_id:
+                  type: string
+                image:
+                  type: string
+                  format: binary
+                  description: Tệp ảnh khuôn mặt chụp trực tiếp (JPEG/PNG)
+                checkin_time:
+                  type: string
+                  example: "08:15:00"
+                checkin_date:
+                  type: string
+                  example: "2026-11-28"
+                uuid:
+                  type: string
+      responses:
+        '201':
+          description: Điểm danh bằng khuôn mặt thành công
+        '200':
+          description: Bản ghi điểm danh với uuid này đã tồn tại
+        '403':
+          description: Giảng viên không có quyền trên môn này
+        '404':
+          description: Không tìm thấy sinh viên hoặc môn học
+        '422':
+          description: Khuôn mặt không khớp, chưa ghi danh, hoặc thiếu ảnh
+        '503':
+          description: Face Service tạm thời không phản hồi
+
     get:
       tags: [Attendance]
       summary: Lấy danh sách lịch sử điểm danh theo môn học và ngày
