@@ -36,6 +36,15 @@ GV_PASSWORD = "lecturer123"
 SAMPLE_JPEG = b"\xff\xd8\xff\xe0\x00\x10JFIF\x00\x01\x01\x01\x00H\x00H\x00\x00" + b"\x00" * 64
 
 
+def get_error_code(res):
+    """Trích xuất mã lỗi từ response format chuẩn {error: {code, message}} hoặc {code}."""
+    if not isinstance(res, dict):
+        return None
+    if "error" in res and isinstance(res["error"], dict):
+        return res["error"].get("code")
+    return res.get("code")
+
+
 @pytest.fixture(autouse=True)
 def clean_mock_handler():
     """Tự động reset mock handler sau mỗi bài test."""
@@ -126,9 +135,6 @@ def test_face_attendance_success(api_gv, v1, setup_data):
     stu_id = setup_data["student_id"]
     checkin_uuid = str(uuid.uuid4())
 
-    # Giả lập Face Matching xác thực thành công (score 0.92 > 0.6)
-    FaceMatchingService.set_mock_handler(lambda s, img: (True, 0.92, "Xác thực khuôn mặt thành công."))
-
     files = {"image": ("face.jpg", io.BytesIO(SAMPLE_JPEG), "image/jpeg")}
     data = {
         "student_id": stu_id,
@@ -137,8 +143,9 @@ def test_face_attendance_success(api_gv, v1, setup_data):
         "checkin_date": "2026-11-27",
         "uuid": checkin_uuid,
     }
+    headers = {"X-Mock-Face-Matching": "score:0.92"}
 
-    r = api_gv.post(f"{v1}/attendance/face", data=data, files=files, timeout=5)
+    r = api_gv.post(f"{v1}/attendance/face", data=data, files=files, headers=headers, timeout=5)
     assert r.status_code == 201, f"Kỳ vọng 201 nhưng nhận {r.status_code}: {r.text}"
 
     res = r.json()
@@ -158,9 +165,6 @@ def test_face_attendance_not_matching_does_not_save(api_gv, v1, setup_data):
     stu_id = setup_data["student_id"]
     checkin_uuid = str(uuid.uuid4())
 
-    # Giả lập Face Matching xác thực thất bại (score 0.35 < 0.6)
-    FaceMatchingService.set_mock_handler(lambda s, img: (False, 0.35, "Khuôn mặt không khớp với hồ sơ."))
-
     files = {"image": ("wrong_face.jpg", io.BytesIO(SAMPLE_JPEG), "image/jpeg")}
     data = {
         "student_id": stu_id,
@@ -169,10 +173,11 @@ def test_face_attendance_not_matching_does_not_save(api_gv, v1, setup_data):
         "checkin_date": "2026-11-27",
         "uuid": checkin_uuid,
     }
+    headers = {"X-Mock-Face-Matching": "fail"}
 
-    r = api_gv.post(f"{v1}/attendance/face", data=data, files=files, timeout=5)
+    r = api_gv.post(f"{v1}/attendance/face", data=data, files=files, headers=headers, timeout=5)
     assert r.status_code == 422, f"Kỳ vọng 422 nhưng nhận {r.status_code}: {r.text}"
-    assert r.json().get("code") == "FACE_VERIFICATION_FAILED"
+    assert get_error_code(r.json()) == "FACE_VERIFICATION_FAILED"
 
     # Kiểm tra database qua API GET /attendance: đảm bảo KHÔNG có bản ghi nào được lưu
     r_check = api_gv.get(f"{v1}/attendance", params={"subject_id": subj_id, "student_id": stu_id})
@@ -191,21 +196,17 @@ def test_face_attendance_service_error_does_not_save(api_gv, v1, setup_data):
     stu_id = setup_data["student_id"]
     checkin_uuid = str(uuid.uuid4())
 
-    def raise_service_error(s, img):
-        raise FaceServiceUnavailableError("Dịch vụ nhận diện khuôn mặt quá tải.")
-
-    FaceMatchingService.set_mock_handler(raise_service_error)
-
     files = {"image": ("face.jpg", io.BytesIO(SAMPLE_JPEG), "image/jpeg")}
     data = {
         "student_id": stu_id,
         "subject_id": subj_id,
         "uuid": checkin_uuid,
     }
+    headers = {"X-Mock-Face-Matching": "service_error"}
 
-    r = api_gv.post(f"{v1}/attendance/face", data=data, files=files, timeout=5)
+    r = api_gv.post(f"{v1}/attendance/face", data=data, files=files, headers=headers, timeout=5)
     assert r.status_code == 503, f"Kỳ vọng 503 nhưng nhận {r.status_code}: {r.text}"
-    assert r.json().get("code") == "FACE_SERVICE_ERROR"
+    assert get_error_code(r.json()) == "FACE_SERVICE_ERROR"
 
 
 # ---------------------------------------------------------------------------
@@ -222,7 +223,7 @@ def test_face_attendance_missing_image(api_gv, v1, setup_data):
     }
     r = api_gv.post(f"{v1}/attendance/face", data=data, timeout=5)
     assert r.status_code == 422
-    assert r.json().get("code") == "MISSING_IMAGE"
+    assert get_error_code(r.json()) == "MISSING_IMAGE"
 
 
 # ---------------------------------------------------------------------------
@@ -252,7 +253,7 @@ def test_face_attendance_student_not_enrolled(api_super, api_gv, v1, setup_data)
 
     r = api_gv.post(f"{v1}/attendance/face", data=data, files=files, timeout=5)
     assert r.status_code == 422
-    assert r.json().get("code") == "STUDENT_NOT_ENROLLED"
+    assert get_error_code(r.json()) == "STUDENT_NOT_ENROLLED"
 
 
 # ---------------------------------------------------------------------------
@@ -298,7 +299,7 @@ def test_face_attendance_forbidden_for_other_lecturer(api_super, api_gv, v1):
     # Giảng viên ADM_001 gọi điểm danh môn other_subj -> 403
     r = api_gv.post(f"{v1}/attendance/face", data=data, files=files, timeout=5)
     assert r.status_code == 403
-    assert r.json().get("code") == "FORBIDDEN"
+    assert get_error_code(r.json()) == "FORBIDDEN"
 
 
 # ---------------------------------------------------------------------------
@@ -310,23 +311,22 @@ def test_face_attendance_idempotent_uuid(api_gv, v1, setup_data):
     stu_id = setup_data["student_id"]
     same_uuid = str(uuid.uuid4())
 
-    FaceMatchingService.set_mock_handler(lambda s, img: (True, 0.95, "Khớp."))
-
     files = {"image": ("face.jpg", io.BytesIO(SAMPLE_JPEG), "image/jpeg")}
     data = {
         "student_id": stu_id,
         "subject_id": subj_id,
         "uuid": same_uuid,
     }
+    headers = {"X-Mock-Face-Matching": "score:0.95"}
 
     # Lần 1: Tạo mới thành công
-    r1 = api_gv.post(f"{v1}/attendance/face", data=data, files=files, timeout=5)
+    r1 = api_gv.post(f"{v1}/attendance/face", data=data, files=files, headers=headers, timeout=5)
     assert r1.status_code == 201
     assert r1.json().get("created") is True
 
     # Lần 2: Gửi lại cùng UUID
     files2 = {"image": ("face.jpg", io.BytesIO(SAMPLE_JPEG), "image/jpeg")}
-    r2 = api_gv.post(f"{v1}/attendance/face", data=data, files=files2, timeout=5)
+    r2 = api_gv.post(f"{v1}/attendance/face", data=data, files=files2, headers=headers, timeout=5)
     assert r2.status_code == 200
     assert r2.json().get("created") is False
     assert r2.json().get("status") == "already_exists"
@@ -340,16 +340,15 @@ def test_attendance_multipart_fallback_success(api_gv, v1, setup_data):
     subj_id = setup_data["subject_id"]
     stu_id = setup_data["student_id"]
 
-    FaceMatchingService.set_mock_handler(lambda s, img: (True, 0.90, "Khớp."))
-
     files = {"image": ("face.jpg", io.BytesIO(SAMPLE_JPEG), "image/jpeg")}
     data = {
         "student_id": stu_id,
         "subject_id": subj_id,
         "uuid": str(uuid.uuid4()),
     }
+    headers = {"X-Mock-Face-Matching": "score:0.90"}
 
-    r = api_gv.post(f"{v1}/attendance", data=data, files=files, timeout=5)
+    r = api_gv.post(f"{v1}/attendance", data=data, files=files, headers=headers, timeout=5)
     assert r.status_code == 201
     assert r.json().get("created") is True
     assert "score" in r.json()

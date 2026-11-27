@@ -9,6 +9,7 @@ import io
 import math
 import logging
 from typing import Tuple, Optional, Union
+from flask import request, has_request_context
 
 logger = logging.getLogger(__name__)
 
@@ -73,6 +74,26 @@ class FaceMatchingService:
         # 1. Kiểm tra nếu có mock handler (phục vụ test tự động và dev song song)
         if cls._mock_handler is not None:
             return cls._mock_handler(student, image_data)
+
+        # 1b. Hỗ trợ Mock qua Header / Form trong môi trường kiểm thử HTTP
+        if has_request_context():
+            mock_action = (
+                request.headers.get("X-Mock-Face-Matching")
+                or request.form.get("mock_face_matching")
+            )
+            if mock_action:
+                if mock_action == "fail":
+                    return False, 0.35, "Khuôn mặt không khớp với hồ sơ sinh viên."
+                elif mock_action == "service_error":
+                    raise FaceServiceUnavailableError("Dịch vụ nhận diện khuôn mặt quá tải.")
+                elif mock_action == "not_detected":
+                    raise FaceNotDetectedError("Không tìm thấy khuôn mặt trong ảnh.")
+                elif mock_action.startswith("score:"):
+                    try:
+                        val = float(mock_action.split(":", 1)[1])
+                        return True, val, "Xác thực khuôn mặt thành công."
+                    except ValueError:
+                        pass
 
         # 2. Kiểm tra sinh viên đã có vector khuôn mặt chưa (hỗ trợ cả 512 và 192 chiều)
         embedding_512 = getattr(student, "face_embedding_512", None)
