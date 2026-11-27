@@ -794,7 +794,7 @@ def _handle_attendance_record(is_face_mode: bool = False):
                     "FACE_VERIFICATION_FAILED",
                     message,
                     422,
-                    details={"score": score, "threshold": 0.6},
+                    details={"score": score, "threshold": 0.40},
                 )
         except FaceServiceUnavailableError as exc:
             # Lỗi service bên ngoài -> không lưu điểm danh
