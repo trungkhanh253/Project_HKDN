@@ -2,6 +2,7 @@ from app import db
 from app.models import Student, Enrollment, Subject
 from app.repositories.base_repository import BaseRepository
 import sqlalchemy as sa
+import math
 
 class StudentRepository(BaseRepository):
     @staticmethod
@@ -55,10 +56,63 @@ class StudentRepository(BaseRepository):
         return items, total
 
     @staticmethod
+    def validate_embedding(embedding, dimension: int):
+        if embedding is None:
+            return None
+
+        if not isinstance(embedding, (list, tuple)):
+            raise ValueError("Vector khuôn mặt không hợp lệ.")
+
+        if len(embedding) != dimension:
+            raise ValueError(
+                f"Vector khuôn mặt phải có đúng {dimension} chiều."
+            )
+
+        if any(
+            isinstance(value, bool)
+            or not isinstance(value, (int, float))
+            or not math.isfinite(value)
+            for value in embedding
+        ):
+            raise ValueError("Vector chứa giá trị không hợp lệ.")
+
+        vector = [float(value) for value in embedding]
+
+        if not any(vector):
+            raise ValueError("Vector khuôn mặt không được là vector 0.")
+
+        return vector
+    
+    @staticmethod
+    def validate_student_embeddings(data: dict):
+        """
+        Kiểm tra các vector được truyền vào khi tạo hoặc cập nhật sinh viên.
+        """
+        data = data.copy()
+
+        if "face_embedding" in data:
+            data["face_embedding"] = (
+                StudentRepository.validate_embedding(
+                    data["face_embedding"], 192
+                )
+            )
+
+        if "face_embedding_512" in data:
+            data["face_embedding_512"] = (
+                StudentRepository.validate_embedding(
+                    data["face_embedding_512"], 512
+                )
+            )
+        return data
+
+
+    @staticmethod
     def create_student(data: dict, subject_id: str = None):
         """
         Tạo mới sinh viên, nếu có subject_id sẽ tự động tạo enrollment ghi danh môn học.
         """
+        data = StudentRepository.validate_student_embeddings(data)
+
         student_id = data.get("student_id")
         existing = Student.query.filter_by(student_id=student_id).first()
         now = BaseRepository.get_current_time()
@@ -73,6 +127,10 @@ class StudentRepository(BaseRepository):
                 existing.photo_path = data.get("photo_path", existing.photo_path)
                 existing.checkin_password = data.get("checkin_password", existing.checkin_password)
                 existing.face_embedding = data.get("face_embedding", existing.face_embedding)
+                existing.face_embedding_512 = data.get(
+                    "face_embedding_512",
+                    existing.face_embedding_512
+                )
                 existing.updated_at = now
                 student = existing
             else:
@@ -86,6 +144,7 @@ class StudentRepository(BaseRepository):
                 photo_path=data.get("photo_path"),
                 checkin_password=data.get("checkin_password"),
                 face_embedding=data.get("face_embedding"),
+                face_embedding_512=data.get("face_embedding_512"),
                 uuid=data.get("uuid", BaseRepository.generate_uuid()),
                 updated_at=now,
             )
@@ -121,9 +180,10 @@ class StudentRepository(BaseRepository):
         student = Student.query.filter_by(student_id=student_id, deleted_at=None).first()
         if not student:
             return None
-
+        
+        data = StudentRepository.validate_student_embeddings(data)
         now = BaseRepository.get_current_time()
-        for field in ("full_name", "email", "phone", "photo_path", "checkin_password", "face_embedding"):
+        for field in ("full_name", "email", "phone", "photo_path", "checkin_password", "face_embedding", "face_embedding_512"):
             if field in data:
                 setattr(student, field, data[field])
 
@@ -155,6 +215,20 @@ class StudentRepository(BaseRepository):
 
     @staticmethod
     def create_or_update(student_data: dict):
+        """
+            Tạo hoặc cập nhật sinh viên phục vụ đồng bộ.
+
+            Chỉ tiếp nhận vector 192 từ Android. Không cho phép dữ liệu sync ghi đè vector 512.
+        """
+        student_data = student_data.copy()
+        student_data.pop("face_embedding_512", None)
+
+        if "face_embedding" in student_data:
+            student_data["face_embedding"] = (
+                StudentRepository.validate_embedding(
+                    student_data["face_embedding"], 192
+                )
+            )
         student = Student.query.filter_by(student_id=student_data.get('student_id')).first()
         now = BaseRepository.get_current_time()
         

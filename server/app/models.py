@@ -153,6 +153,7 @@ class Student(db.Model, SyncMetadataMixin):
     photo_path = db.Column(db.Text, nullable=True)
     checkin_password = db.Column(db.String(255), nullable=True)
     face_embedding = db.Column(Vector(192), nullable=True)
+    face_embedding_512 = db.Column(Vector(512), nullable=True)
 
     def to_dict(self):
         return {
