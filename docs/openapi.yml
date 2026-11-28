@@ -795,6 +795,18 @@ components:
         is_selected:
           type: boolean
           default: true
+    EmailRecipientUpdate:
+      type: object
+      description: Chỉ cập nhật các trường được gửi. Không đổi được môn của người nhận.
+      properties:
+        email_address:
+          type: string
+          format: email
+        recipient_name:
+          type: string
+          nullable: true
+        is_selected:
+          type: boolean
     EmailRecipientList:
       type: object
       required:
@@ -1888,7 +1900,7 @@ paths:
         content:
           application/json:
             schema:
-              $ref: '#/components/schemas/EmailRecipientInput'
+              $ref: '#/components/schemas/EmailRecipientUpdate'
       responses:
         '200':
           description: Đã cập nhật
@@ -1902,6 +1914,8 @@ paths:
           $ref: '#/components/responses/Forbidden'
         '404':
           $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/Conflict'
         '422':
           $ref: '#/components/responses/ValidationError'
     delete:
@@ -1961,6 +1975,10 @@ paths:
           $ref: '#/components/responses/Forbidden'
         '404':
           $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/Conflict'
+        '422':
+          $ref: '#/components/responses/ValidationError'
   /import/csv:
     post:
       tags:

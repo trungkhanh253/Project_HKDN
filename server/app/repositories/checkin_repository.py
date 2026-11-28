@@ -1,4 +1,5 @@
 from app import db
+from app.permissions import filter_accessible
 from app.models import CheckinHistory, Student, Subject, Enrollment
 from app.repositories.base_repository import BaseRepository
 import sqlalchemy as sa
@@ -30,16 +31,43 @@ class CheckinRepository(BaseRepository):
         return checkin, True
 
     @staticmethod
-    def get_history(subject_id: str = None, checkin_date: str = None, student_id: str = None, limit: int = 100, offset: int = 0):
-        query = CheckinHistory.query.filter(CheckinHistory.deleted_at.is_(None))
+    def get_history(
+        subject_id: str = None,
+        checkin_date: str = None,
+        student_id: str = None,
+        limit: int = 100,
+        offset: int = 0
+    ):
+        query = CheckinHistory.query.filter(
+            CheckinHistory.deleted_at.is_(None)
+        )
+
+        # Lọc quyền ADMIN/SUPER_ADMIN trước khi truy vấn dữ liệu
+        query = filter_accessible(query, CheckinHistory)
 
         if subject_id:
-            query = query.filter(CheckinHistory.subject_id == subject_id)
-        if checkin_date:
-            query = query.filter(CheckinHistory.checkin_date == checkin_date)
-        if student_id:
-            query = query.filter(CheckinHistory.student_id == student_id)
+            query = query.filter(
+                CheckinHistory.subject_id == subject_id
+            )
 
+        if checkin_date:
+            query = query.filter(
+                CheckinHistory.checkin_date == checkin_date
+            )
+
+        if student_id:
+            query = query.filter(
+                CheckinHistory.student_id == student_id
+            )
+
+        # Total được tính sau khi lọc quyền
         total = query.count()
-        items = query.order_by(CheckinHistory.checkin_id.desc()).offset(offset).limit(limit).all()
+
+        items = (
+            query.order_by(CheckinHistory.checkin_id.desc())
+            .offset(offset)
+            .limit(limit)
+            .all()
+        )
+
         return items, total

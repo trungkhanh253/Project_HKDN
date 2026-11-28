@@ -76,11 +76,13 @@ def create_app():
     app.config["SECRET_KEY"] = secret_key
 
     # CORS - Cho phép nhóm Web truy cập Flask API
-    cors_origins = [
-        origin.strip()
-        for origin in os.getenv("CORS_ORIGINS", "").split(",")
-        if origin.strip()
-    ]
+    # CORS - Cấu hình an toàn qua thư viện Flask-CORS
+    raw_cors = os.getenv("CORS_ORIGINS", "")
+    if raw_cors:
+        cors_origins = [origin.strip() for origin in raw_cors.split(",") if origin.strip()]
+    else:
+        # Nếu chưa cấu hình biến môi trường, mặc định cho phép các cổng local phát triển thông dụng
+        cors_origins = ["http://localhost:3000", "http://localhost:5173", "http://127.0.0.1:3000", "http://127.0.0.1:5173"]
 
     if CORS is not None:
         CORS(
@@ -94,6 +96,7 @@ def create_app():
             allow_headers=["Content-Type", "Authorization"],
             supports_credentials=False,
         )
+        
 
     @app.before_request
     def handle_options_preflight():
